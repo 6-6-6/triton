@@ -8,8 +8,8 @@ if [[ ${PV} = 9999* ]]; then
 	inherit git-r3
 else
 	inherit pypi
-	KEYWORDS="arm64-macos ~amd64 ~x86"
 	KEYWORDS=""
+	##arm64-macos"
 fi
 
 PYTHON_COMPAT=( python3_{10..12} )
@@ -58,6 +58,7 @@ DEPEND="
 		sound? ( dev-python/gst-python:1.0[${PYTHON_USEDEP}] )
 	')
 	x11-libs/gtk+:3
+	x11-libs/gtk-mac-integration
 	brotli? ( app-arch/brotli )
 	csc? ( >=media-video/ffmpeg-1.2.2:0= )
 	ffmpeg? ( >=media-video/ffmpeg-3.2.2:0=[x264] )
@@ -146,7 +147,7 @@ python_configure_all() {
 		--without-enc_x265
 		--with-gtk3
 		$(use_with jpeg jpeg_encoder)
-		$(use_with jpeg jpeg_decoder)
+		$(use_with lz4)
 		--without-mdns
 		--without-sd_listen
 		--without-service
@@ -159,7 +160,7 @@ python_configure_all() {
 		--with-warn
 		$(use_with webcam)
 		$(use_with webp)
-		--with-x11
+		--without-x11
 	)
 
 	export XPRA_SOCKET_DIRS="${EPREFIX}/run/xpra"
@@ -197,8 +198,12 @@ python_install_all() {
 			mv -vnT "${ED}"/usr/lib/udev "${ED}${dir}" || die
 		fi
 	else
-		rm -vr "${ED}"/usr/lib/udev || die
-		rm -v "${ED}"/usr/libexec/xpra/xpra_udev_product_version || die
+		if [[ -d "${ED}"/usr/lib/udev ]]; then
+			rm -vr "${ED}"/usr/lib/udev || die
+		fi
+		if [[ -f "${ED}"/usr/libexec/xpra/xpra_udev_product_version ]]; then
+			rm -v "${ED}"/usr/libexec/xpra/xpra_udev_product_version || die
+		fi
 	fi
 }
 

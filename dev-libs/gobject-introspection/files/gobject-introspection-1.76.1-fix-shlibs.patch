@@ -1,0 +1,21 @@
+diff -Nur a/giscanner/shlibs.py b/giscanner/shlibs.py
+--- a/giscanner/shlibs.py	2023-03-23 06:43:34.000000000 +0800
++++ b/giscanner/shlibs.py	2023-09-09 16:19:07.775973788 +0800
+@@ -100,7 +100,7 @@
+         if options.ldd_wrapper:
+             args.extend([options.ldd_wrapper, binary.args[0]])
+         elif platform_system == 'Darwin':
+-            args.extend(['otool', '-L', binary.args[0]])
++            args.extend(['llvm-otool', '-L', binary.args[0]])
+         else:
+             args.extend(['ldd', binary.args[0]])
+         output = subprocess.check_output(args)
+@@ -129,6 +129,8 @@
+     patterns = {}
+     for library in libraries:
+         if not os.path.isfile(library):
++            print("It does not work well on MacOS")
++            continue
+             patterns[library] = _ldd_library_pattern(library)
+     if len(patterns) == 0:
+         return []
