@@ -11,7 +11,7 @@ DESCRIPTION="Multi-Level Intermediate Representation "
 HOMEPAGE="https://mlir.llvm.org"
 
 LICENSE="Apache-2.0-with-LLVM-exceptions || ( UoI-NCSA MIT )"
-SLOT="0"
+SLOT="${LLVM_MAJOR}/${LLVM_SOABI}"
 KEYWORDS="arm64-macos"
 IUSE="+clang +static-libs test"
 REQUIRED_USE="test? ( clang )"
