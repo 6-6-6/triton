@@ -33,7 +33,6 @@ RDEPEND="
 "
 
 BDEPEND="
-	prefix? ( dev-util/patchelf )
 	verify-sig? ( sec-keys/openpgp-keys-rust )
 "
 

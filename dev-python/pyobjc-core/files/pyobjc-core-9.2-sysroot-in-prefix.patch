@@ -1,0 +1,118 @@
+diff -Nur a/Modules/objc/libffi_extra.h b/Modules/objc/libffi_extra.h
+--- a/Modules/objc/libffi_extra.h	2023-09-10 15:59:59.006785000 +0800
++++ b/Modules/objc/libffi_extra.h	2023-09-10 16:00:04.808854817 +0800
+@@ -7,7 +7,7 @@
+ /*
+  * ffi_alloc_closure + ffi_prep_closure
+  */
+-#include <ffi/ffi.h>
++#include <ffi.h>
+ extern int  alloc_prepped_closure(ffi_closure** cl, ffi_cif* cif, void** codeloc,
+                                   void* func, void* userdata);
+ extern void free_closure_from_codeloc(void* codeloc, ffi_cif** cif, void** userdata);
+diff -Nur a/Modules/objc/libffi_extra.m b/Modules/objc/libffi_extra.m
+--- a/Modules/objc/libffi_extra.m	2023-09-10 15:59:59.006943000 +0800
++++ b/Modules/objc/libffi_extra.m	2023-09-10 16:00:28.174497543 +0800
+@@ -1,6 +1,6 @@
+ #include "libffi_extra.h"
+ #include "closure_pool.h"
+-#include <ffi/ffi.h>
++#include <ffi.h>
+ 
+ int
+ alloc_prepped_closure(ffi_closure** cl, ffi_cif* cif, void** codeloc, void* func,
+@@ -76,7 +76,7 @@
+ 
+ #if PyObjC_BUILD_RELEASE >= 1015
+     if (@available(macOS 10.15, *)) { // LCOV_BR_EXCL_LINE
+-        cl        = ffi_find_closure_for_code_np(codeloc);
++        cl        = (ffi_closure*)codeloc;
+         *cif      = cl->cif;
+         *userdata = cl->user_data;
+         ffi_closure_free(cl);
+@@ -91,7 +91,7 @@
+ #else
+ #pragma clang diagnostic push
+ #pragma clang diagnostic ignored "-Wunguarded-availability-new"
+-    cl        = ffi_find_closure_for_code_np(codeloc);
++    cl        = (ffi_closure*)codeloc;
+     *cif      = cl->cif;
+     *userdata = cl->user_data;
+     ffi_closure_free(cl);
+diff -Nur a/Modules/objc/libffi_support.h b/Modules/objc/libffi_support.h
+--- a/Modules/objc/libffi_support.h	2023-09-10 15:59:59.007089000 +0800
++++ b/Modules/objc/libffi_support.h	2023-09-10 16:00:04.810892129 +0800
+@@ -1,7 +1,7 @@
+ #ifndef PyObjC_FFI_SUPPORT_H
+ #define PyObjC_FFI_SUPPORT_H
+ 
+-#include <ffi/ffi.h>
++#include <ffi.h>
+ 
+ NS_ASSUME_NONNULL_BEGIN
+ 
+diff -Nur a/Modules/objc/selector.h b/Modules/objc/selector.h
+--- a/Modules/objc/selector.h	2023-09-10 15:59:59.014174000 +0800
++++ b/Modules/objc/selector.h	2023-09-10 16:00:04.811645262 +0800
+@@ -12,7 +12,7 @@
+ #define PyObjCSelector_kRETURNS_UNINITIALIZED 0x000010
+ #define PyObjCSelector_kNATIVE 0x000020
+ 
+-#include <ffi/ffi.h>
++#include <ffi.h>
+ 
+ NS_ASSUME_NONNULL_BEGIN
+ 
+diff -Nur a/setup.py b/setup.py
+--- a/setup.py	2023-09-10 15:59:59.050077000 +0800
++++ b/setup.py	2023-09-10 16:00:04.812686689 +0800
+@@ -2,6 +2,7 @@
+ import os
+ import re
+ import plistlib
++import portage
+ import shlex
+ import tempfile
+ import sys
+@@ -16,6 +17,8 @@
+ 
+ from pkg_resources import add_activation_listener, normalize_path, require, working_set
+ 
++EPREFIX = str(portage.root)
++
+ 
+ def get_config_var(var):
+     return _get_config_var(var) or ""
+@@ -87,7 +90,7 @@
+     # "-fsanitize=address", "-fsanitize=undefined", "-fno-sanitize=vptr",
+     # "--analyze",
+     "-Werror",
+-    "-I/usr/include/ffi",
++    f"-I{EPREFIX}/usr/lib/libffi/include",
+     "-fvisibility=hidden",
+     # "-O0",
+     "-g",
+@@ -549,7 +552,7 @@
+             CFLAGS.remove("-Werror")
+             EXT_CFLAGS.remove("-Werror")
+ 
+-        self.sdk_root = os.environ.get("SDKROOT", None)
++        self.sdk_root = f"{EPREFIX}MacOSX.sdk"
+         if self.sdk_root is None:
+             if os.path.exists("/usr/bin/xcrun"):
+                 self.sdk_root = subprocess.check_output(
+@@ -582,9 +585,11 @@
+ 
+         if self.sdk_root != "python":
+             if "-isysroot" not in CFLAGS:
+-                CFLAGS.extend(["-isysroot", self.sdk_root])
+-                EXT_CFLAGS.extend(["-isysroot", self.sdk_root])
+-                OBJC_LDFLAGS.extend(["-isysroot", self.sdk_root])
++                pass
++                # see ${EPREFIX}/etc/clang/
++                #CFLAGS.extend(["-isysroot", self.sdk_root])
++                #EXT_CFLAGS.extend(["-isysroot", self.sdk_root])
++                #OBJC_LDFLAGS.extend(["-isysroot", self.sdk_root])
+ 
+         cflags = get_config_var("CFLAGS")
+         if "-mno-fused-madd" in cflags:

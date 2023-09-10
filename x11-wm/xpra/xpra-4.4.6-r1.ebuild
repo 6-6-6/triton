@@ -8,8 +8,7 @@ if [[ ${PV} = 9999* ]]; then
 	inherit git-r3
 else
 	inherit pypi
-	KEYWORDS=""
-	##arm64-macos"
+	KEYWORDS="~arm64-macos"
 fi
 
 PYTHON_COMPAT=( python3_{10..12} )
@@ -84,6 +83,7 @@ RDEPEND="
 			dev-python/pyinotify[${PYTHON_USEDEP}]
 			media-libs/opencv[${PYTHON_USEDEP},python]
 		)
+		dev-python/pyobjc-framework-Quartz[${PYTHON_USEDEP}]
 	')
 	acct-group/xpra
 	virtual/ssh
