@@ -109,6 +109,38 @@ multilib_src_install() {
 				patchelf_for_bin ${filename} ${interpreter} \; || die
 			done
 		eend $?
+		local libs=(
+			/usr/lib/libc++.1.dylib
+			/usr/lib/libc++abi.dylib
+			/usr/lib/libcurl.4.dylib
+			/usr/lib/libiconv.2.dylib
+			/usr/lib/libz.1.dylib
+		)
+		libs=()
+		# strip x86-64 things
+		find "${ED}/opt/${P}/" -type f -name \*dylib -print0 | \
+			while IFS=  read -r -d '' filename; do
+				local output=$(/usr/bin/lipo -info "${filename}" |grep Non-fat)
+				if [[ -z ${output} ]]; then
+					/usr/bin/lipo -thin ${ARCH/-macos/} \
+						${filename} \
+						-o ${filename} || die
+				fi
+			done
+		for lib in ${libs[@]}; do
+			find "${ED}"/opt/${P}/bin -type f \
+				-exec /usr/bin/install_name_tool \-change \
+				${lib} "${EPREFIX}"${lib} \
+				{} \; || die
+			find "${ED}"/opt/${P}/libexec -type f \
+				-exec /usr/bin/install_name_tool \-change \
+				${lib} "${EPREFIX}"${lib} \
+				{} \; || die
+			find "${ED}"/opt/${P}/ -type f -name \*.dylib \
+				-exec /usr/bin/install_name_tool \-change \
+				${lib} "${EPREFIX}"${lib} \
+				{} \; || die
+		done
 	fi
 
 	local symlinks=(

@@ -1,0 +1,417 @@
+diff -Nur a/DOCS/man/options.rst b/DOCS/man/options.rst
+--- a/DOCS/man/options.rst	2023-07-24 01:10:36.000000000 +0800
++++ b/DOCS/man/options.rst	2023-09-17 17:26:58.594863275 +0800
+@@ -6245,6 +6245,35 @@
+ 
+     macOS only.
+ 
++``--macos-output-csp=<csp>``
++    This sets the color space of the layer to activate the macOS color
++    transformation. Depending on the color space used the system's EDR (HDT)
++    support will be activated. To get correct results, this needs to be set to
++    the color primaries/transfer characteristics of the video. It is recommended
++    to use this switch together with ``--target-trc``.
++
++    ``<csp>`` can be one of the following:
++
++    :auto:               Sets the color space to the icc profile of the
++                         screen (default).
++    :display_p3:         DCI P3 primaries, a D65 white point, and the sRGB
++                         transfer function.
++    :display_p3_hlg:     DCI P3 primaries, a D65 white point, and the Hybrid
++                         Log-Gamma (HLG) transfer function.
++    :display_p3_pq:      DCI P3 primaries, a D65 white point, and the Perceptual
++                         Quantizer (PQ) transfer function.
++    :display_p3_pq_eotf: DCI P3 primaries, a D65 white point, and the Perceptual
++                         Quantizer (PQ) transfer function.
++    :dcip3:              DCI P3 color space.
++    :itur_2020:          ITU BT.2020 color space.
++    :itur_709:           ITU BT.709 color space.
++    :srgb:               sRGB colorimetry and non-linear transfer function.
++    :linear_srgb:        Same as sRGB but linear transfer function.
++    :generic_rgb_linear: RGB and linear transfer function.
++    :adobe_rgb1998:      Adobe RGB (1998) color space.
++
++    macOS only.
++
+ ``--android-surface-size=<WxH>``
+     Set dimensions of the rendering surface used by the Android gpu context.
+     Needs to be set by the embedding application if the dimensions change during
+diff -Nur a/meson.build b/meson.build
+--- a/meson.build	2023-07-24 01:10:36.000000000 +0800
++++ b/meson.build	2023-09-17 17:26:58.596644835 +0800
+@@ -1526,6 +1526,22 @@
+     error_message: 'a suitable macos sdk version could not be found!',
+ )
+ 
++macos_10_11_2_features = get_option('macos-10-11-2-features').require(
++    macos_sdk_version.version_compare('>=10.11.2'),
++    error_message: 'a suitable macos sdk version could not be found!',
++)
++macos_10_12_features = get_option('macos-10-12-features').require(
++    macos_sdk_version.version_compare('>=10.12'),
++    error_message: 'a suitable macos sdk version could not be found!',
++)
++macos_10_14_6_features = get_option('macos-10-14-6-features').require(
++    macos_sdk_version.version_compare('>=10.14.6'),
++    error_message: 'a suitable macos sdk version could not be found!',
++)
++macos_10_15_4_features = get_option('macos-10-15-4-features').require(
++    macos_sdk_version.version_compare('>=10.15.4'),
++    error_message: 'a suitable macos sdk version could not be found!',
++)
+ swift = get_option('swift-build').require(
+     darwin and macos_sdk_version.version_compare('>=10.10') and swift_ver.version_compare('>=4.1'),
+     error_message: 'A suitable macos sdk version or swift version could not be found!',
+diff -Nur a/meson_options.txt b/meson_options.txt
+--- a/meson_options.txt	2023-07-24 01:10:36.000000000 +0800
++++ b/meson_options.txt	2023-09-17 17:27:48.102394352 +0800
+@@ -111,6 +111,10 @@
+ option('macos-10-11-features', type: 'feature', value: 'auto', description: 'macOS 10.11 SDK Features')
+ option('macos-10-12-2-features', type: 'feature', value: 'auto', description: 'macOS 10.12.2 SDK Features')
+ option('macos-10-14-features', type: 'feature', value: 'auto', description: 'macOS 10.14 SDK Features')
++option('macos-10-11-2-features', type: 'feature', value: 'auto', description: 'macOS 10.11.2 SDK Features')
++option('macos-10-12-features', type: 'feature', value: 'auto', description: 'macOS 10.12 SDK Features')
++option('macos-10-14-6-features', type: 'feature', value: 'auto', description: 'macOS 10.14.6 SDK Features')
++option('macos-10-15-4-features', type: 'feature', value: 'auto', description: 'macOS 10.15.4 SDK Features')
+ option('macos-cocoa-cb', type: 'feature', value: 'auto', description: 'macOS libmpv backend')
+ option('macos-media-player', type: 'feature', value: 'auto', description: 'macOS Media Player support')
+ option('macos-touchbar', type: 'feature', value: 'auto', description: 'macOS Touch Bar support')
+diff -Nur a/osdep/macos/swift_extensions.swift b/osdep/macos/swift_extensions.swift
+--- a/osdep/macos/swift_extensions.swift	2023-07-24 01:10:36.000000000 +0800
++++ b/osdep/macos/swift_extensions.swift	2023-09-17 17:26:58.597552510 +0800
+@@ -22,7 +22,6 @@
+ }
+ 
+ extension NSScreen {
+-
+     public var displayID: CGDirectDisplayID {
+         get {
+             return deviceDescription[.screenNumber] as? CGDirectDisplayID ?? 0
+@@ -62,7 +61,6 @@
+ }
+ 
+ extension NSColor {
+-
+     convenience init(hex: String) {
+         let int = Int(hex.dropFirst(), radix: 16) ?? 0
+         let alpha = CGFloat((int >> 24) & 0x000000FF)/255
+@@ -75,15 +73,19 @@
+ }
+ 
+ extension Bool {
+-
+     init(_ int32: Int32) {
+         self.init(int32 != 0)
+     }
+ }
+ 
+ extension Int32 {
+-
+     init(_ bool: Bool) {
+         self.init(bool ? 1 : 0)
+     }
+ }
++
++protocol VideoLayer: class {
++    var colorspace: CGColorSpace? { get set }
++}
++
++extension CAOpenGLLayer: VideoLayer {}
+diff -Nur a/osdep/macosx_application.h b/osdep/macosx_application.h
+--- a/osdep/macosx_application.h	2023-07-24 01:10:36.000000000 +0800
++++ b/osdep/macosx_application.h	2023-09-17 17:26:58.598146391 +0800
+@@ -26,6 +26,39 @@
+     FRAME_WHOLE,
+ };
+ 
++enum {
++    MAC_CSP_AUTO = -1,
++    MAC_CSP_DISPLAY_P3, //macOS 10.11.2+
++    MAC_CSP_DISPLAY_P3_HLG, //macOS 10.14.6+
++    MAC_CSP_DISPLAY_P3_PQ_EOTF, //macOS 10.14.6–10.15.4
++    MAC_CSP_DCIP3, //macOS 10.11+
++    MAC_CSP_ITUR_2020, //macOS 10.11+
++    MAC_CSP_ITUR_709, //macOS 10.11+
++
++    MAC_CSP_SRGB, //macOS 10.5+
++    MAC_CSP_LINEAR_SRGB, //macOS 10.12+
++    MAC_CSP_GENERIC_RGB_LINEAR, //macOS 10.5+
++    MAC_CSP_ADOBE_RGB1998, //macOS 10.5+
++
++    // no documentation?
++    MAC_CSP_DISPLAY_P3_PQ, //macOS 10.15.4+
++
++
++    // extended formats with values below 0.0 and above 1.0, useless?
++    MAC_CSP_EXTENDED_LINEAR_DISPLAY_P3, //macOS 10.14.3+
++    MAC_CSP_EXTENDED_SRGB, //macOS 10.12+
++    MAC_CSP_EXTENDED_LINEAR_SRGB, //macOS 10.12+
++    MAC_CSP_EXTENDED_LINEAR_ITUR_2020, //macOS 10.14.3+
++    // pixel values between 0.0 and 12.0
++    MAC_CSP_ITUR_2020_HLG, //macOS 10.15.6–11.0
++    // pixel value of 1.0 is assumed to be 100 nits
++    MAC_CSP_ITUR_2020_PQ_EOTF, //macOS 10.14.6–10.15.4
++
++    // no documentation?
++    MAC_CSP_EXTENDED_DISPLAY_P3, //macOS 11.0+
++    MAC_CSP_EXTENDED_ITUR_2020, //macOS 11.0+
++};
++
+ struct macos_opts {
+     int macos_title_bar_style;
+     int macos_title_bar_appearance;
+@@ -35,6 +68,7 @@
+     bool macos_force_dedicated_gpu;
+     int macos_app_activation_policy;
+     int macos_geometry_calculation;
++    int macos_output_csp;
+     int cocoa_cb_sw_renderer;
+     bool cocoa_cb_10bit_context;
+ };
+diff -Nur a/osdep/macosx_application.m b/osdep/macosx_application.m
+--- a/osdep/macosx_application.m	2023-07-24 01:10:36.000000000 +0800
++++ b/osdep/macosx_application.m	2023-09-17 17:26:58.598995317 +0800
+@@ -67,6 +67,19 @@
+             {"regular", 0}, {"accessory", 1}, {"prohibited", 2})},
+         {"macos-geometry-calculation", OPT_CHOICE(macos_geometry_calculation,
+             {"visible", FRAME_VISIBLE}, {"whole", FRAME_WHOLE})},
++        {"macos-output-csp", OPT_CHOICE(macos_output_csp,
++             {"auto", MAC_CSP_AUTO},
++             {"display_p3", MAC_CSP_DISPLAY_P3},
++             {"display_p3_hlg", MAC_CSP_DISPLAY_P3_HLG},
++             {"display_p3_pq", MAC_CSP_DISPLAY_P3_PQ},
++             {"display_p3_pq_eotf", MAC_CSP_DISPLAY_P3_PQ_EOTF},
++             {"dcip3", MAC_CSP_DCIP3},
++             {"itur_2020", MAC_CSP_ITUR_2020},
++             {"itur_709", MAC_CSP_ITUR_709},
++             {"srgb", MAC_CSP_SRGB},
++             {"linear_srgb", MAC_CSP_LINEAR_SRGB},
++             {"generic_rgb_linear", MAC_CSP_GENERIC_RGB_LINEAR},
++             {"adobe_rgb1998", MAC_CSP_ADOBE_RGB1998})},
+         {"cocoa-cb-sw-renderer", OPT_CHOICE(cocoa_cb_sw_renderer,
+             {"auto", -1}, {"no", 0}, {"yes", 1})},
+         {"cocoa-cb-10bit-context", OPT_BOOL(cocoa_cb_10bit_context)},
+@@ -78,6 +91,7 @@
+     .defaults = &(const struct macos_opts){
+         .macos_title_bar_color = {0, 0, 0, 0},
+         .macos_fs_animation_duration = -1,
++        .macos_output_csp = MAC_CSP_AUTO,
+         .cocoa_cb_sw_renderer = -1,
+         .cocoa_cb_10bit_context = true
+     },
+diff -Nur a/video/out/cocoa_cb_common.swift b/video/out/cocoa_cb_common.swift
+--- a/video/out/cocoa_cb_common.swift	2023-07-24 01:10:36.000000000 +0800
++++ b/video/out/cocoa_cb_common.swift	2023-09-17 17:26:58.599689699 +0800
+@@ -21,6 +21,10 @@
+     var libmpv: LibmpvHelper
+     var layer: GLLayer?
+ 
++    override var videoLayer: VideoLayer? {
++        get { return layer }
++    }
++
+     @objc var isShuttingDown: Bool = false
+ 
+     enum State {
+@@ -121,9 +125,7 @@
+         }
+ 
+         libmpv.setRenderICCProfile(colorSpace)
+-        if #available(macOS 10.11, *) {
+-            layer?.colorspace = colorSpace.cgColorSpace
+-        }
++        super.updateICCProfile()
+     }
+ 
+     override func windowDidEndAnimation() {
+diff -Nur a/video/out/mac/common.swift b/video/out/mac/common.swift
+--- a/video/out/mac/common.swift	2023-07-24 01:10:36.000000000 +0800
++++ b/video/out/mac/common.swift	2023-09-17 17:26:58.600611041 +0800
+@@ -26,6 +26,7 @@
+     var window: Window?
+     var view: View?
+     var titleBar: TitleBar?
++    private(set) var videoLayer: VideoLayer?
+ 
+     var link: CVDisplayLink?
+ 
+@@ -396,7 +397,95 @@
+     }
+ 
+     func updateICCProfile() {
+-        log.sendWarning("updateICCProfile not implemented")
++        layerGuard: if #available(macOS 10.11, *) {
++            guard let layer = videoLayer else {
++                log.sendWarning("No layer found, macOS color transformation deactivated")
++                break layerGuard
++            }
++
++            layer.colorspace = getColorSpace()
++        }
++
++        flagEvents(VO_EVENT_ICC_PROFILE_CHANGED)
++    }
++
++    @available(macOS 10.11, *)
++    func getColorSpace() -> CGColorSpace? {
++        guard let colorSpace = window?.screen?.colorSpace?.cgColorSpace else {
++            log.sendWarning("Couldn't retrieve ICC Profile, no color space available")
++            return nil
++        }
++
++        let outputCsp = Int(mpv?.macOpts.macos_output_csp ?? Int32(MAC_CSP_AUTO))
++
++        switch outputCsp {
++        case MAC_CSP_AUTO:
++            return colorSpace
++        case MAC_CSP_SRGB:
++            return CGColorSpace(name: CGColorSpace.sRGB)
++        case MAC_CSP_GENERIC_RGB_LINEAR:
++            return CGColorSpace(name: CGColorSpace.genericRGBLinear)
++        case MAC_CSP_ADOBE_RGB1998:
++            return CGColorSpace(name: CGColorSpace.adobeRGB1998)
++#if HAVE_MACOS_10_11_FEATURES
++        case MAC_CSP_DCIP3:
++            return CGColorSpace(name: CGColorSpace.dcip3)
++        case MAC_CSP_ITUR_2020:
++            return CGColorSpace(name: CGColorSpace.itur_2020)
++        case MAC_CSP_ITUR_709:
++            return CGColorSpace(name: CGColorSpace.itur_709)
++#endif
++        default: break
++        }
++
++#if HAVE_MACOS_10_11_2_FEATURES
++        if #available(macOS 10.11.2, *) {
++            switch outputCsp {
++            case MAC_CSP_DISPLAY_P3:
++                return CGColorSpace(name: CGColorSpace.displayP3)
++            default: break
++            }
++        }
++#endif
++
++#if HAVE_MACOS_10_12_FEATURES
++        if #available(macOS 10.12, *) {
++            switch outputCsp {
++            case MAC_CSP_LINEAR_SRGB:
++                return CGColorSpace(name: CGColorSpace.linearSRGB)
++            default: break
++            }
++        }
++#endif
++
++#if HAVE_MACOS_10_14_6_FEATURES
++        // these color spaces are defined from SDK 10.14.6 onwards but throws a
++        // null pointer exception when accessing on 10.14.6, but not on 10.15.x
++        // most likely an OS bug
++        if #available(macOS 10.15, *) {
++            switch outputCsp {
++            case MAC_CSP_DISPLAY_P3_HLG:
++                return CGColorSpace(name: CGColorSpace.displayP3_HLG)
++            case MAC_CSP_DISPLAY_P3_PQ_EOTF:
++                return CGColorSpace(name: CGColorSpace.displayP3_PQ_EOTF) // deprecated
++            default: break
++            }
++        }
++#endif
++
++#if HAVE_MACOS_10_15_4_FEATURES
++        if #available(macOS 10.15.4, *) {
++            switch outputCsp {
++            case MAC_CSP_DISPLAY_P3_PQ:
++                return CGColorSpace(name: CGColorSpace.displayP3_PQ)
++            default: break
++            }
++        }
++#endif
++
++        log.sendWarning("Couldn't retrieve configured color space, falling back to auto")
++
++        return colorSpace
+     }
+ 
+     func getScreenBy(id screenID: Int) -> NSScreen? {
+@@ -698,6 +787,8 @@
+                 titleBar?.set(material: Int(mpv.macOpts.macos_title_bar_material))
+             case MPVHelper.getPointer(&mpv.macOptsPtr.pointee.macos_title_bar_color):
+                 titleBar?.set(color: mpv.macOpts.macos_title_bar_color)
++            case MPVHelper.getPointer(&mpv.macOptsPtr.pointee.macos_output_csp):
++                updateICCProfile()
+             default:
+                 break
+             }
+diff -Nur a/video/out/mac/gl_layer.swift b/video/out/mac/gl_layer.swift
+--- a/video/out/mac/gl_layer.swift	2023-07-24 01:10:36.000000000 +0800
++++ b/video/out/mac/gl_layer.swift	2023-09-17 17:26:58.601169380 +0800
+@@ -108,6 +108,8 @@
+         super.init()
+         autoresizingMask = [.layerWidthSizable, .layerHeightSizable]
+         backgroundColor = NSColor.black.cgColor
++        // that this to true by default?
++        wantsExtendedDynamicRangeContent = true
+ 
+         if #available(macOS 10.12, *), bufferDepth > 8 {
+             contentsFormat = .RGBA16Float
+diff -Nur a/video/out/mac/title_bar.swift b/video/out/mac/title_bar.swift
+--- a/video/out/mac/title_bar.swift	2023-07-24 01:10:36.000000000 +0800
++++ b/video/out/mac/title_bar.swift	2023-09-17 17:26:58.601708386 +0800
+@@ -45,7 +45,6 @@
+             } else {
+                 state = .followsWindowActiveState
+             }
+-
+         }
+     }
+ 
+diff -Nur a/video/out/mac/view.swift b/video/out/mac/view.swift
+--- a/video/out/mac/view.swift	2023-07-24 01:10:36.000000000 +0800
++++ b/video/out/mac/view.swift	2023-09-17 17:26:58.602231099 +0800
+@@ -33,6 +33,7 @@
+         super.init(frame: frame)
+         autoresizingMask = [.width, .height]
+         wantsBestResolutionOpenGLSurface = true
++        wantsExtendedDynamicRangeOpenGLSurface = true
+         registerForDraggedTypes([ .fileURLCompat, .URLCompat, .string ])
+     }
+ 
+diff -Nur a/wscript b/wscript
+--- a/wscript	2023-07-24 01:10:36.000000000 +0800
++++ b/wscript	2023-09-17 17:26:58.603102983 +0800
+@@ -937,6 +937,16 @@
+         'deps': 'cocoa',
+         'func': check_macos_sdk('10.11')
+     }, {
++        'name': '--macos-10-11-2-features',
++        'desc': 'macOS 10.11.2 SDK Features',
++        'deps': 'cocoa',
++        'func': check_macos_sdk('10.11.2')
++    }, {
++        'name': '--macos-10-12-features',
++        'desc': 'macOS 10.12 SDK Features',
++        'deps': 'cocoa',
++        'func': check_macos_sdk('10.12')
++    }, {
+         'name': '--macos-10-12-2-features',
+         'desc': 'macOS 10.12.2 SDK Features',
+         'deps': 'cocoa',
+@@ -946,7 +956,17 @@
+         'desc': 'macOS 10.14 SDK Features',
+         'deps': 'cocoa',
+         'func': check_macos_sdk('10.14')
+-    },{
++    }, {
++        'name': '--macos-10-14-6-features',
++        'desc': 'macOS 10.14.6 SDK Features',
++        'deps': 'cocoa',
++        'func': check_macos_sdk('10.14.6')
++    }, {
++        'name': '--macos-10-15-4-features',
++        'desc': 'macOS 10.15.4 SDK Features',
++        'deps': 'cocoa',
++        'func': check_macos_sdk('10.15.4')
++    }, {
+         'name': '--macos-media-player',
+         'desc': 'macOS Media Player support',
+         'deps': 'macos-10-12-2-features && swift',
