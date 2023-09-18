@@ -136,8 +136,8 @@ BDEPEND="
 
 PATCHES=(
 	"${FILESDIR}"/${PN}-0.36.0-darwin-hdr.patch
+	"${FILESDIR}"/${PN}-0.36.0-darwin-no-khr-display.patch
 )
-#	darwin-no-khr-display.patch
 
 pkg_setup() {
 	use lua && lua-single_pkg_setup
@@ -227,7 +227,7 @@ src_configure() {
 		$(mpv_feature_multi opengl aqua gl-cocoa)
 		$(meson_feature raspberry-pi rpi)
 
-		-Dvulkan=disabled
+		-Dvulkan=enabled
 		$(meson_feature vulkan shaderc)
 
 		# hardware decoding

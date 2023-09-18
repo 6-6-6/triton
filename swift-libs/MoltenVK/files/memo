@@ -1,0 +1,9 @@
+ - reuse the owner's procedure to prepare libs
+ 
+ - /opt/lumiere/usr/local/bin/xcodebuild build -project MoltenVKShaderConverter/MoltenVKShaderConverter.xcodeproj -target MoltenVKShaderConverter-macOS -arch arm64
+ - redo libtool using prefix'one
+
+ - patch create_dylib.sh (use things inside prefix)
+ - /opt/lumiere/usr/local/bin/xcodebuild build -project MoltenVK/MoltenVK.xcodeproj -target MoltenVK-macOS -arch arm64
+
+ - should work?

@@ -43,7 +43,8 @@ src_install() {
 	doins MoltenVK/dylib/macOS/MoltenVK_icd.json
 	
 	dodir /usr/lib
-	dolib.so MoltenVK/dylib/macOS/libMoltenVK.dylib
+	dolib.so "${FILESDIR}"/libMoltenVK.dylib
+	#dolib.so MoltenVK/dylib/macOS/libMoltenVK.dylib
 
 	dodir /usr/include
 	insinto /usr/include
