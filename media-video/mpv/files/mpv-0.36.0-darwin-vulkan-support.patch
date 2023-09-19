@@ -1,0 +1,2188 @@
+diff -Nur a/meson.build c/meson.build
+--- a/meson.build	2023-09-19 14:18:45.302073446 +0800
++++ c/meson.build	2023-09-19 14:26:35.103790435 +0800
+@@ -1281,6 +1281,10 @@
+      sources += files('video/out/vulkan/context_xlib.c')
+ endif
+ 
++if features['vulkan'] and features['cocoa']
++     sources += files('video/out/vulkan/context_mac.m')
++endif
++
+ features += {'vk_khr_display': cc.has_function('vkCreateDisplayPlaneSurfaceKHR', prefix: '#include <vulkan/vulkan_core.h>',
+                                                dependencies: [vulkan])}
+ 
+@@ -1379,7 +1383,7 @@
+ ios_gl = cc.has_header_symbol('OpenGLES/ES3/glext.h', 'GL_RGB32F', required: get_option('ios-gl'))
+ features += {'ios-gl': ios_gl}
+ if features['ios-gl']
+-    sources += files('video/out/opengl/hwdec_ios.m')
++    sources += files('video/out/hwdec/hwdec_ios_gl.m')
+ endif
+ 
+ rpi_mmal_opt = get_option('rpi-mmal').require(
+@@ -1467,8 +1471,12 @@
+     error_message: 'gl-cocoa nor ios-gl could be found!',
+ )
+ features += {'videotoolbox-gl': videotoolbox_gl.allowed()}
++features += {'videotoolbox-pl': videotoolbox_gl.allowed() and libplacebo.found()}
+ if features['videotoolbox-gl']
+-    sources += files('video/out/opengl/hwdec_osx.c')
++    sources += files('video/out/hwdec/hwdec_mac_gl.c', 'video/out/hwdec/hwdec_vt.c')
++endif
++if features['videotoolbox-pl']
++    sources += files('video/out/hwdec/hwdec_vt_pl.m')
+ endif
+ 
+ 
+@@ -1554,6 +1562,7 @@
+                            'osdep/macos/mpv_helper.swift',
+                            'osdep/macos/swift_compat.swift',
+                            'osdep/macos/swift_extensions.swift',
++                           'osdep/macos/precise_timer.swift',
+                            'video/out/mac/common.swift',
+                            'video/out/mac/title_bar.swift',
+                            'video/out/mac/view.swift',
+@@ -1569,6 +1578,10 @@
+     swift_sources += files('video/out/cocoa_cb_common.swift',
+                            'video/out/mac/gl_layer.swift')
+ endif
++if features['cocoa'] and features['vulkan']
++    swift_sources += files('video/out/mac_common.swift',
++                           'video/out/mac/metal_layer.swift')
++endif
+ 
+ macos_media_player = get_option('macos-media-player').require(
+     macos_10_12_2_features.allowed() and swift.allowed(),
+diff -Nur a/osdep/macOS_swift_bridge.h c/osdep/macOS_swift_bridge.h
+--- a/osdep/macOS_swift_bridge.h	2023-09-19 14:18:34.215558000 +0800
++++ c/osdep/macOS_swift_bridge.h	2023-09-19 14:23:37.763651000 +0800
+@@ -15,9 +15,10 @@
+  * License along with mpv.  If not, see <http://www.gnu.org/licenses/>.
+  */
+ 
+-// including IOKit here again doesn't make sense, but otherwise the swift
++// including frameworks here again doesn't make sense, but otherwise the swift
+ // compiler doesn't include the needed header in our generated header file
+ #import <IOKit/pwr_mgt/IOPMLib.h>
++#import <QuartzCore/QuartzCore.h>
+ 
+ #include "player/client.h"
+ #include "video/out/libmpv.h"
+diff -Nur a/osdep/macos/libmpv_helper.swift c/osdep/macos/libmpv_helper.swift
+--- a/osdep/macos/libmpv_helper.swift	2023-09-19 14:18:34.215740000 +0800
++++ c/osdep/macos/libmpv_helper.swift	2023-09-19 14:23:37.756753000 +0800
+@@ -34,10 +34,9 @@
+         mpvHandle = mpv
+         log = LogHelper(mpLog)
+ 
+-        guard let app = NSApp as? Application,
+-              let ptr = mp_get_config_group(nil,
++        guard let ptr = mp_get_config_group(nil,
+                                             mp_client_get_global(mpvHandle),
+-                                            app.getMacOSConf()) else
++                                            Application.getMacOSConf()) else
+         {
+             log.sendError("macOS config group couldn't be retrieved'")
+             exit(1)
+diff -Nur a/osdep/macos/mpv_helper.swift c/osdep/macos/mpv_helper.swift
+--- a/osdep/macos/mpv_helper.swift	2023-09-19 14:18:34.215975000 +0800
++++ c/osdep/macos/mpv_helper.swift	2023-09-19 14:23:37.756851000 +0800
+@@ -42,8 +42,7 @@
+         self.vo = vo
+         self.log = log
+ 
+-        guard let app = NSApp as? Application,
+-              let cache = m_config_cache_alloc(vo, vo.pointee.global, app.getVoSubConf()) else
++        guard let cache = m_config_cache_alloc(vo, vo.pointee.global, Application.getVoSubConf()) else
+         {
+             log.sendError("NSApp couldn't be retrieved")
+             exit(1)
+@@ -54,7 +53,7 @@
+ 
+         guard let macCache = m_config_cache_alloc(vo,
+                                                   vo.pointee.global,
+-                                                  app.getMacOSConf()) else
++                                                  Application.getMacOSConf()) else
+         {
+             // will never be hit, mp_get_config_group asserts for invalid groups
+             exit(1)
+diff -Nur a/osdep/macos/precise_timer.swift c/osdep/macos/precise_timer.swift
+--- a/osdep/macos/precise_timer.swift	1970-01-01 08:00:00.000000000 +0800
++++ c/osdep/macos/precise_timer.swift	2023-09-19 14:23:37.756959000 +0800
+@@ -0,0 +1,139 @@
++/*
++ * This file is part of mpv.
++ *
++ * mpv is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * mpv is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with mpv.  If not, see <http://www.gnu.org/licenses/>.
++ */
++
++import Cocoa
++
++class PreciseTimer {
++    unowned var common: Common
++    var mpv: MPVHelper? { get { return common.mpv } }
++
++    let condition = NSCondition()
++    var events: [[String:Any]] = []
++    var timebaseRatio: Double = 1.0
++    var isRunning: Bool = true
++    var isHighPrecision: Bool = false
++
++    var thread: pthread_t?
++    var threadPort: thread_port_t? = nil
++    let typeNumber: mach_msg_type_number_t
++    let policyFlavor = thread_policy_flavor_t(THREAD_TIME_CONSTRAINT_POLICY)
++    let policyCount = MemoryLayout<thread_time_constraint_policy>.size /
++                          MemoryLayout<integer_t>.size
++
++    init(common com: Common) {
++        common = com
++        var timebase: mach_timebase_info = mach_timebase_info()
++        var attr: pthread_attr_t = pthread_attr_t()
++        var param: sched_param = sched_param()
++        mach_timebase_info(&timebase)
++        pthread_attr_init(&attr)
++
++        typeNumber = mach_msg_type_number_t(policyCount)
++        timebaseRatio = (Double(timebase.numer) / Double(timebase.denom)) / CVGetHostClockFrequency()
++        param.sched_priority = sched_get_priority_max(SCHED_FIFO)
++        pthread_attr_setschedparam(&attr, &param)
++        pthread_attr_setschedpolicy(&attr, SCHED_FIFO)
++        pthread_create(&thread, &attr, entryC, MPVHelper.bridge(obj: self))
++        threadPort = pthread_mach_thread_np(thread!)
++    }
++
++    func updatePolicy(refreshRate: Double = 60.0) {
++        let period = UInt32(1.0 / refreshRate / timebaseRatio)
++        var policy = thread_time_constraint_policy(
++            period: period,
++            computation: UInt32(200000),
++            constraint:  period / 10,
++            preemptible: 1
++        )
++
++        let success = withUnsafeMutablePointer(to: &policy) {
++            $0.withMemoryRebound(to: integer_t.self, capacity: policyCount) {
++                thread_policy_set(threadPort!, policyFlavor, $0, typeNumber)
++            }
++        }
++
++        isHighPrecision = success == KERN_SUCCESS
++        if !isHighPrecision {
++            common.log.sendWarning("Couldn't create a high precision timer")
++        }
++    }
++
++    func terminate() {
++        condition.lock()
++        isRunning = false
++        condition.signal()
++        condition.unlock()
++        // TODO ! shit
++        pthread_kill(thread!, SIGALRM)
++        pthread_join(thread!, nil)
++    }
++
++    func scheduleAt(time: UInt64, closure: @escaping () -> () ) {
++        condition.lock()
++        let firstEventTime = events.first?["time"] as? UInt64 ?? 0
++        let lastEventTime = events.last?["time"] as? UInt64 ?? 0
++        events.append(["time": time, "closure": closure])
++
++        if lastEventTime > time {
++            events.sort{ ($0["time"] as! UInt64) < ($1["time"] as! UInt64) }
++        }
++
++        condition.signal()
++        condition.unlock()
++
++        if firstEventTime > time {
++            pthread_kill(thread!, SIGALRM)
++        }
++    }
++
++    let threadSignal: @convention(c) (Int32) -> () = { (sig: Int32) in }
++
++    let entryC: @convention(c) (UnsafeMutableRawPointer) -> UnsafeMutableRawPointer? = { (ptr: UnsafeMutableRawPointer) in
++        let ptimer: PreciseTimer = MPVHelper.bridge(ptr: ptr)
++        ptimer.entry()
++        return nil
++    }
++
++    func entry() {
++        signal(SIGALRM, threadSignal)
++
++        while isRunning {
++            condition.lock()
++            while events.count == 0 && isRunning {
++                condition.wait()
++            }
++
++            if !isRunning { break }
++
++            let event = events.first
++            condition.unlock()
++
++            let time = event?["time"] as! UInt64
++            let closure = event?["closure"] as! () -> ()
++
++            mach_wait_until(time)
++
++            condition.lock()
++            if (events.first?["time"] as! UInt64) == time && isRunning {
++                closure()
++                events.removeFirst()
++            }
++            condition.unlock()
++        }
++    }
++
++}
+diff -Nur a/osdep/macosx_application.m c/osdep/macosx_application.m
+--- a/osdep/macosx_application.m	2023-09-19 14:18:45.304411337 +0800
++++ c/osdep/macosx_application.m	2023-09-19 14:23:37.763760000 +0800
+@@ -206,12 +206,12 @@
+ #endif
+ }
+ 
+-- (const struct m_sub_options *)getMacOSConf
+++ (const struct m_sub_options *)getMacOSConf
+ {
+     return &macos_conf;
+ }
+ 
+-- (const struct m_sub_options *)getVoSubConf
+++ (const struct m_sub_options *)getVoSubConf
+ {
+     return &vo_sub_opts;
+ }
+diff -Nur a/osdep/macosx_application_objc.h c/osdep/macosx_application_objc.h
+--- a/osdep/macosx_application_objc.h	2023-09-19 14:18:34.216698000 +0800
++++ c/osdep/macosx_application_objc.h	2023-09-19 14:23:37.763875000 +0800
+@@ -31,8 +31,8 @@
+ - (void)stopMPV:(char *)cmd;
+ - (void)openFiles:(NSArray *)filenames;
+ - (void)setMpvHandle:(struct mpv_handle *)ctx;
+-- (const struct m_sub_options *)getMacOSConf;
+-- (const struct m_sub_options *)getVoSubConf;
+++ (const struct m_sub_options *)getMacOSConf;
+++ (const struct m_sub_options *)getVoSubConf;
+ 
+ @property(nonatomic, retain) MenuBar *menuBar;
+ @property(nonatomic, assign) size_t openCount;
+diff -Nur a/video/out/cocoa_cb_common.swift c/video/out/cocoa_cb_common.swift
+--- a/video/out/cocoa_cb_common.swift	2023-09-19 14:18:45.304960674 +0800
++++ c/video/out/cocoa_cb_common.swift	2023-09-19 14:23:37.800276000 +0800
+@@ -77,11 +77,22 @@
+     }
+ 
+     func initBackend(_ vo: UnsafeMutablePointer<vo>) {
+-        let previousActiveApp = getActiveApp()
+-        initApp()
+-        initWindow(vo, previousActiveApp)
+-        updateICCProfile()
+-        initWindowState()
++        if (mpv?.opts.WinID ?? -1) != -1 {
++            guard let view = self.view else {
++                log.sendError("Something went wrong, no View was initialized")
++                exit(1)
++            }
++
++            let cView: View = unsafeBitCast(mpv!.opts.WinID, to: View.self)
++            cView.addSubview(view)
++            view.frame = cView.frame
++        } else {
++            let previousActiveApp = getActiveApp()
++            initApp()
++            initWindow(vo, previousActiveApp)
++            updateICCProfile()
++            initWindowState()
++        }
+ 
+         backendState = .initialized
+     }
+diff -Nur a/video/out/gpu/context.c c/video/out/gpu/context.c
+--- a/video/out/gpu/context.c	2023-09-19 14:18:34.242381000 +0800
++++ c/video/out/gpu/context.c	2023-09-19 14:23:37.786802000 +0800
+@@ -50,6 +50,7 @@
+ extern const struct ra_ctx_fns ra_ctx_vulkan_win;
+ extern const struct ra_ctx_fns ra_ctx_vulkan_xlib;
+ extern const struct ra_ctx_fns ra_ctx_vulkan_android;
++extern const struct ra_ctx_fns ra_ctx_vulkan_macos;
+ extern const struct ra_ctx_fns ra_ctx_vulkan_display;
+ 
+ /* Direct3D 11 */
+@@ -110,6 +111,10 @@
+ #if HAVE_X11
+     &ra_ctx_vulkan_xlib,
+ #endif
++// check for molten instead?
++#if HAVE_COCOA
++    &ra_ctx_vulkan_macos,
++#endif
+ #if HAVE_VK_KHR_DISPLAY
+     &ra_ctx_vulkan_display,
+ #endif
+diff -Nur a/video/out/gpu/hwdec.c c/video/out/gpu/hwdec.c
+--- a/video/out/gpu/hwdec.c	2023-09-19 14:18:34.242984000 +0800
++++ c/video/out/gpu/hwdec.c	2023-09-19 14:23:37.786915000 +0800
+@@ -44,7 +44,7 @@
+ #if HAVE_VAAPI_EGL || HAVE_VAAPI_LIBPLACEBO
+     &ra_hwdec_vaapi,
+ #endif
+-#if HAVE_VIDEOTOOLBOX_GL || HAVE_IOS_GL
++#if HAVE_VIDEOTOOLBOX_GL || HAVE_IOS_GL || (HAVE_COCOA && HAVE_VULKAN)
+     &ra_hwdec_videotoolbox,
+ #endif
+ #if HAVE_D3D_HWACCEL
+diff -Nur a/video/out/hwdec/hwdec_vt.c c/video/out/hwdec/hwdec_vt.c
+--- a/video/out/hwdec/hwdec_vt.c	1970-01-01 08:00:00.000000000 +0800
++++ c/video/out/hwdec/hwdec_vt.c	2023-09-19 14:23:37.788831000 +0800
+@@ -0,0 +1,139 @@
++/*
++ * This file is part of mpv.
++ *
++ * mpv is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * mpv is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with mpv.  If not, see <http://www.gnu.org/licenses/>.
++ */
++
++#include <stddef.h>
++#include <string.h>
++#include <assert.h>
++#include <unistd.h>
++
++#include <libavutil/hwcontext.h>
++#include <libavutil/hwcontext_videotoolbox.h>
++
++#include "config.h"
++
++#include "video/out/gpu/hwdec.h"
++#include "video/out/hwdec/hwdec_vt.h"
++
++static void determine_working_formats(struct ra_hwdec *hw);
++
++static void uninit(struct ra_hwdec *hw)
++{
++    struct priv_owner *p = hw->priv;
++
++    hwdec_devices_remove(hw->devs, &p->hwctx);
++    av_buffer_unref(&p->hwctx.av_device_ref);
++}
++
++const static vt_interop_init interop_inits[] = {
++#if HAVE_VIDEOTOOLBOX_GL || HAVE_IOS_GL
++    vt_gl_init,
++#endif
++#if HAVE_LIBPLACEBO && COREVIDEO_SUPPORTS_METAL
++    vt_pl_init,
++#endif
++    NULL
++};
++
++static int init(struct ra_hwdec *hw)
++{
++    struct priv_owner *p = hw->priv;
++
++    for (int i = 0; interop_inits[i]; i++) {
++        if (interop_inits[i](hw)) {
++            break;
++        }
++    }
++
++    if (!p->interop_map || !p->interop_unmap) {
++        MP_VERBOSE(hw, "VT hwdec only works with OpenGL or Vulkan backends.\n");
++        return -1;
++    }
++
++    p->hwctx = (struct mp_hwdec_ctx){
++        .driver_name = hw->driver->name,
++        .hw_imgfmt = IMGFMT_VIDEOTOOLBOX,
++    };
++
++    av_hwdevice_ctx_create(&p->hwctx.av_device_ref, AV_HWDEVICE_TYPE_VIDEOTOOLBOX,
++                           NULL, NULL, 0);
++
++    hwdec_devices_add(hw->devs, &p->hwctx);
++
++    return 0;
++}
++
++static void mapper_unmap(struct ra_hwdec_mapper *mapper)
++{
++    struct priv_owner *p_owner = mapper->owner->priv;
++
++    p_owner->interop_unmap(mapper);
++}
++
++static void mapper_uninit(struct ra_hwdec_mapper *mapper)
++{
++    struct priv_owner *p_owner = mapper->owner->priv;
++    if (p_owner->interop_uninit) {
++        p_owner->interop_uninit(mapper);
++    }
++}
++
++static int mapper_init(struct ra_hwdec_mapper *mapper)
++{
++    struct priv_owner *p_owner = mapper->owner->priv;
++    struct priv *p = mapper->priv;
++
++    mapper->dst_params = mapper->src_params;
++    mapper->dst_params.imgfmt = mapper->src_params.hw_subfmt;
++    mapper->dst_params.hw_subfmt = 0;
++
++    if (!mapper->dst_params.imgfmt) {
++        MP_ERR(mapper, "Unsupported CVPixelBuffer format.\n");
++        return -1;
++    }
++
++    if (!ra_get_imgfmt_desc(mapper->ra, mapper->dst_params.imgfmt, &p->desc)) {
++        MP_ERR(mapper, "Unsupported texture format.\n");
++        return -1;
++    }
++
++    if (p_owner->interop_init)
++        return p_owner->interop_init(mapper);
++
++    return 0;
++}
++
++static int mapper_map(struct ra_hwdec_mapper *mapper)
++{
++    struct priv_owner *p_owner = mapper->owner->priv;
++
++    return p_owner->interop_map(mapper);
++}
++
++const struct ra_hwdec_driver ra_hwdec_videotoolbox = {
++    .name = "videotoolbox",
++    .priv_size = sizeof(struct priv_owner),
++    .imgfmts = {IMGFMT_VIDEOTOOLBOX, 0},
++    .init = init,
++    .uninit = uninit,
++    .mapper = &(const struct ra_hwdec_mapper_driver){
++        .priv_size = sizeof(struct priv),
++        .init = mapper_init,
++        .uninit = mapper_uninit,
++        .map = mapper_map,
++        .unmap = mapper_unmap,
++    },
++};
+diff -Nur a/video/out/hwdec/hwdec_vt.h c/video/out/hwdec/hwdec_vt.h
+--- a/video/out/hwdec/hwdec_vt.h	1970-01-01 08:00:00.000000000 +0800
++++ c/video/out/hwdec/hwdec_vt.h	2023-09-19 14:23:37.788946000 +0800
+@@ -0,0 +1,63 @@
++/*
++ * This file is part of mpv.
++ *
++ * mpv is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * mpv is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with mpv.  If not, see <http://www.gnu.org/licenses/>.
++ */
++
++#pragma once
++
++#include <CoreVideo/CoreVideo.h>
++
++#include "config.h"
++#include "video/out/gpu/hwdec.h"
++
++struct priv_owner {
++    struct mp_hwdec_ctx hwctx;
++
++    int (*interop_init)(struct ra_hwdec_mapper *mapper);
++    void (*interop_uninit)(struct ra_hwdec_mapper *mapper);
++
++    int (*interop_map)(struct ra_hwdec_mapper *mapper);
++    void (*interop_unmap)(struct ra_hwdec_mapper *mapper);
++};
++
++struct priv {
++    void *interop_mapper_priv;
++
++    CVPixelBufferRef pbuf;
++
++#if HAVE_VIDEOTOOLBOX_GL
++    GLuint gl_planes[MP_MAX_PLANES];
++#elif HAVE_IOS_GL
++    CVOpenGLESTextureCacheRef gl_texture_cache;
++    CVOpenGLESTextureRef gl_planes[MP_MAX_PLANES];
++#endif
++
++#if HAVE_VULKAN && COREVIDEO_SUPPORTS_METAL
++#if defined(__OBJC__)
++    CVMetalTextureCacheRef mtl_texture_cache;
++    CVMetalTextureRef mtl_planes[MP_MAX_PLANES];
++#else
++    void* mtl_texture_cache;
++    void* mtl_planes[MP_MAX_PLANES];
++#endif
++#endif
++
++    struct ra_imgfmt_desc desc;
++};
++
++typedef bool (*vt_interop_init)(const struct ra_hwdec *hw);
++
++bool vt_gl_init(const struct ra_hwdec *hw);
++bool vt_pl_init(const struct ra_hwdec *hw);
+diff -Nur a/video/out/hwdec/hwdec_vt_pl.m c/video/out/hwdec/hwdec_vt_pl.m
+--- a/video/out/hwdec/hwdec_vt_pl.m	1970-01-01 08:00:00.000000000 +0800
++++ c/video/out/hwdec/hwdec_vt_pl.m	2023-09-19 14:23:37.789057000 +0800
+@@ -0,0 +1,276 @@
++/*
++ * Copyright (c) 2013 Stefano Pigozzi <stefano.pigozzi@gmail.com>
++ *               2017 Aman Gupta <ffmpeg@tmm1.net>
++ *
++ * This file is part of mpv.
++ *
++ * mpv is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * mpv is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with mpv.  If not, see <http://www.gnu.org/licenses/>.
++ */
++
++#include <assert.h>
++
++#include <CoreVideo/CoreVideo.h>
++#include <Metal/Metal.h>
++
++#include <libavutil/hwcontext.h>
++
++#include <libplacebo/renderer.h>
++
++#include "config.h"
++
++#include "video/out/gpu/hwdec.h"
++#include "video/out/placebo/ra_pl.h"
++#include "video/mp_image_pool.h"
++
++#include "hwdec_vt.h"
++
++#if COREVIDEO_SUPPORTS_METAL
++
++static bool check_hwdec(const struct ra_hwdec *hw)
++{
++    pl_gpu gpu = ra_pl_get(hw->ra_ctx->ra);
++    if (!gpu) {
++        // This is not a libplacebo RA;
++        return false;
++    }
++
++    if (!(gpu->import_caps.tex & PL_HANDLE_MTL_TEX)) {
++        MP_VERBOSE(hw, "VideoToolbox libplacebo interop requires support for "
++                       "PL_HANDLE_MTL_TEX import.\n");
++        return false;
++    }
++
++    return true;
++}
++
++static int mapper_init(struct ra_hwdec_mapper *mapper)
++{
++    struct priv *p = mapper->priv;
++
++    mapper->dst_params = mapper->src_params;
++    mapper->dst_params.imgfmt = mapper->src_params.hw_subfmt;
++    mapper->dst_params.hw_subfmt = 0;
++
++    if (!mapper->dst_params.imgfmt) {
++        MP_ERR(mapper, "Unsupported CVPixelBuffer format.\n");
++        return -1;
++    }
++
++    if (!ra_get_imgfmt_desc(mapper->ra, mapper->dst_params.imgfmt, &p->desc)) {
++        MP_ERR(mapper, "Unsupported texture format.\n");
++        return -1;
++    }
++
++    for (int n = 0; n < p->desc.num_planes; n++) {
++        if (!p->desc.planes[n] || p->desc.planes[n]->ctype != RA_CTYPE_UNORM) {
++            MP_ERR(mapper, "Format unsupported.\n");
++            return -1;
++        }
++    }
++
++    CVReturn err = CVMetalTextureCacheCreate(
++        kCFAllocatorDefault,
++        NULL,
++        MTLCreateSystemDefaultDevice(), //FIXME
++        NULL,
++        &p->mtl_texture_cache);
++
++    if (err != noErr) {
++        MP_ERR(mapper, "Failure in CVOpenGLESTextureCacheCreate: %d\n", err);
++        return -1;
++    }
++
++    return 0;
++}
++
++static void mapper_unmap(struct ra_hwdec_mapper *mapper)
++{
++    struct priv *p = mapper->priv;
++
++    for (int i = 0; i < p->desc.num_planes; i++) {
++        ra_tex_free(mapper->ra, &mapper->tex[i]);
++        if (p->mtl_planes[i]) {
++            CFRelease(p->mtl_planes[i]);
++            p->mtl_planes[i] = NULL;
++        }
++    }
++
++    CVMetalTextureCacheFlush(p->mtl_texture_cache, 0);
++}
++
++static const struct {
++    const char *glsl;
++    MTLPixelFormat mtl;
++} mtl_fmts[] = {
++    {"r16f",           MTLPixelFormatR16Float     },
++    {"r32f",           MTLPixelFormatR32Float     },
++    {"rg16f",          MTLPixelFormatRG16Float    },
++    {"rg32f",          MTLPixelFormatRG32Float    },
++    {"rgba16f",        MTLPixelFormatRGBA16Float  },
++    {"rgba32f",        MTLPixelFormatRGBA32Float  },
++    {"r11f_g11f_b10f", MTLPixelFormatRG11B10Float },
++
++    {"r8",             MTLPixelFormatR8Unorm      },
++    {"r16",            MTLPixelFormatR16Unorm     },
++    {"rg8",            MTLPixelFormatRG8Unorm     },
++    {"rg16",           MTLPixelFormatRG16Unorm    },
++    {"rgba8",          MTLPixelFormatRGBA8Unorm   },
++    {"rgba16",         MTLPixelFormatRGBA16Unorm  },
++    {"rgb10_a2",       MTLPixelFormatRGB10A2Unorm },
++
++    {"r8_snorm",       MTLPixelFormatR8Snorm      },
++    {"r16_snorm",      MTLPixelFormatR16Snorm     },
++    {"rg8_snorm",      MTLPixelFormatRG8Snorm     },
++    {"rg16_snorm",     MTLPixelFormatRG16Snorm    },
++    {"rgba8_snorm",    MTLPixelFormatRGBA8Snorm   },
++    {"rgba16_snorm",   MTLPixelFormatRGBA16Snorm  },
++
++    {"r8ui",           MTLPixelFormatR8Uint       },
++    {"r16ui",          MTLPixelFormatR16Uint      },
++    {"r32ui",          MTLPixelFormatR32Uint      },
++    {"rg8ui",          MTLPixelFormatRG8Uint      },
++    {"rg16ui",         MTLPixelFormatRG16Uint     },
++    {"rg32ui",         MTLPixelFormatRG32Uint     },
++    {"rgba8ui",        MTLPixelFormatRGBA8Uint    },
++    {"rgba16ui",       MTLPixelFormatRGBA16Uint   },
++    {"rgba32ui",       MTLPixelFormatRGBA32Uint   },
++    {"rgb10_a2ui",     MTLPixelFormatRGB10A2Uint  },
++
++    {"r8i",            MTLPixelFormatR8Sint       },
++    {"r16i",           MTLPixelFormatR16Sint      },
++    {"r32i",           MTLPixelFormatR32Sint      },
++    {"rg8i",           MTLPixelFormatRG8Sint      },
++    {"rg16i",          MTLPixelFormatRG16Sint     },
++    {"rg32i",          MTLPixelFormatRG32Sint     },
++    {"rgba8i",         MTLPixelFormatRGBA8Sint    },
++    {"rgba16i",        MTLPixelFormatRGBA16Sint   },
++    {"rgba32i",        MTLPixelFormatRGBA32Sint   },
++
++    { NULL,            MTLPixelFormatInvalid },
++};
++
++static MTLPixelFormat get_mtl_fmt(const char* glsl)
++{
++    if (!glsl)
++        return MTLPixelFormatInvalid;
++
++    for (int i = 0; mtl_fmts[i].glsl; i++) {
++        if (!strcmp(glsl, mtl_fmts[i].glsl))
++            return mtl_fmts[i].mtl;
++    }
++
++    return MTLPixelFormatInvalid;
++}
++
++static int mapper_map(struct ra_hwdec_mapper *mapper)
++{
++    struct priv *p = mapper->priv;
++    pl_gpu gpu = ra_pl_get(mapper->owner->ra_ctx->ra);
++
++    CVPixelBufferRelease(p->pbuf);
++    p->pbuf = (CVPixelBufferRef)mapper->src->planes[3];
++    CVPixelBufferRetain(p->pbuf);
++
++    const bool planar = CVPixelBufferIsPlanar(p->pbuf);
++    const int planes  = CVPixelBufferGetPlaneCount(p->pbuf);
++    assert((planar && planes == p->desc.num_planes) || p->desc.num_planes == 1);
++
++    for (int i = 0; i < p->desc.num_planes; i++) {
++        const struct ra_format *fmt = p->desc.planes[i];
++
++        pl_fmt plfmt = ra_pl_fmt_get(fmt);
++        MTLPixelFormat format = get_mtl_fmt(plfmt->glsl_format);
++
++        if (!format) {
++            MP_ERR(mapper, "Format unsupported.\n");
++            return -1;
++        }
++
++        size_t width  = CVPixelBufferGetWidthOfPlane(p->pbuf, i),
++               height = CVPixelBufferGetHeightOfPlane(p->pbuf, i);
++
++        CVReturn err = CVMetalTextureCacheCreateTextureFromImage(
++            kCFAllocatorDefault,
++            p->mtl_texture_cache,
++            p->pbuf,
++            NULL,
++            format,
++            width,
++            height,
++            i,
++            &p->mtl_planes[i]);
++
++        if (err != noErr) {
++            MP_ERR(mapper, "error creating texture for plane %d: %d\n", i, err);
++            return -1;
++        }
++
++        struct pl_tex_params tex_params = {
++            .w = width,
++            .h = height,
++            .d = 0,
++            .format = plfmt,
++            .sampleable = true,
++            .import_handle = PL_HANDLE_MTL_TEX,
++            .shared_mem = (struct pl_shared_mem) {
++                .handle = {
++                    .handle = CVMetalTextureGetTexture(p->mtl_planes[i]),
++                },
++            },
++        };
++
++        pl_tex pltex = pl_tex_create(gpu, &tex_params);
++        if (!pltex)
++            return -1;
++
++        struct ra_tex *ratex = talloc_ptrtype(NULL, ratex);
++        int ret = mppl_wrap_tex(mapper->ra, pltex, ratex);
++        if (!ret) {
++            pl_tex_destroy(gpu, &pltex);
++            talloc_free(ratex);
++            return -1;
++        }
++        mapper->tex[i] = ratex;
++    }
++
++    return 0;
++}
++
++static void mapper_uninit(struct ra_hwdec_mapper *mapper)
++{
++    struct priv *p = mapper->priv;
++
++    CVPixelBufferRelease(p->pbuf);
++    if (p->mtl_texture_cache) {
++        CFRelease(p->mtl_texture_cache);
++        p->mtl_texture_cache = NULL;
++    }
++}
++
++bool vt_pl_init(const struct ra_hwdec *hw)
++{
++    struct priv_owner *p = hw->priv;
++
++    if (!check_hwdec(hw))
++        return false;
++
++    p->interop_init   = mapper_init;
++    p->interop_uninit = mapper_uninit;
++    p->interop_map    = mapper_map;
++    p->interop_unmap  = mapper_unmap;
++
++    return true;
++}
++
++#endif
+diff -Nur a/video/out/mac/metal_layer.swift c/video/out/mac/metal_layer.swift
+--- a/video/out/mac/metal_layer.swift	1970-01-01 08:00:00.000000000 +0800
++++ c/video/out/mac/metal_layer.swift	2023-09-19 14:23:37.789921000 +0800
+@@ -0,0 +1,43 @@
++/*
++ * This file is part of mpv.
++ *
++ * mpv is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * mpv is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with mpv.  If not, see <http://www.gnu.org/licenses/>.
++ */
++
++import Cocoa
++
++class MetalLayer: CAMetalLayer {
++    unowned var common: MacCommon
++
++    init(common com: MacCommon) {
++        common = com
++        super.init()
++
++        pixelFormat = .rgba16Float
++        backgroundColor = NSColor.black.cgColor
++    }
++
++    // necessary for when the layer containing window changes the screen
++    override init(layer: Any) {
++        guard let oldLayer = layer as? MetalLayer else {
++            fatalError("init(layer: Any) passed an invalid layer")
++        }
++        common = oldLayer.common
++        super.init()
++    }
++
++    required init?(coder: NSCoder) {
++        fatalError("init(coder:) has not been implemented")
++    }
++}
+diff -Nur a/video/out/mac/window.swift c/video/out/mac/window.swift
+--- a/video/out/mac/window.swift	2023-09-19 14:18:34.247986000 +0800
++++ c/video/out/mac/window.swift	2023-09-19 14:23:37.790030000 +0800
+@@ -28,10 +28,12 @@
+ 
+     var unfsContentFrame: NSRect?
+     var isInFullscreen: Bool = false
+-    var isAnimating: Bool = false
+     var isMoving: Bool = false
+     var previousStyleMask: NSWindow.StyleMask = [.titled, .closable, .miniaturizable, .resizable]
+ 
++    var isAnimating: Bool = false
++    let animationLock: NSCondition = NSCondition()
++
+     var unfsContentFramePixel: NSRect { get { return convertToBacking(unfsContentFrame ?? NSRect(x: 0, y: 0, width: 160, height: 90)) } }
+     var framePixel: NSRect { get { return convertToBacking(frame) } }
+ 
+@@ -115,7 +117,9 @@
+             return
+         }
+ 
++        animationLock.lock()
+         isAnimating = true
++        animationLock.unlock()
+ 
+         targetScreen = common.getTargetScreen(forFullscreen: !isInFullscreen)
+         if targetScreen == nil && previousScreen == nil {
+@@ -224,7 +228,10 @@
+             }, completionHandler: nil )
+         }
+ 
++        animationLock.lock()
+         isAnimating = false
++        animationLock.signal()
++        animationLock.unlock()
+         common.windowDidEndAnimation()
+     }
+ 
+@@ -265,6 +272,14 @@
+         common.windowSetToWindow()
+     }
+ 
++    func waitForAnimation() {
++        animationLock.lock()
++        while(isAnimating){
++            animationLock.wait()
++        }
++        animationLock.unlock()
++    }
++
+     func getFsAnimationDuration(_ def: Double) -> Double {
+         let duration = mpv?.macOpts.macos_fs_animation_duration ?? -1
+         if duration < 0 {
+diff -Nur a/video/out/mac_common.swift c/video/out/mac_common.swift
+--- a/video/out/mac_common.swift	1970-01-01 08:00:00.000000000 +0800
++++ c/video/out/mac_common.swift	2023-09-19 14:23:37.800403000 +0800
+@@ -0,0 +1,192 @@
++/*
++ * This file is part of mpv.
++ *
++ * mpv is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * mpv is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with mpv.  If not, see <http://www.gnu.org/licenses/>.
++ */
++
++import Cocoa
++
++class MacCommon: Common {
++    @objc var layer: MetalLayer?
++
++    var timer: PreciseTimer?
++    var swapTime: UInt64 = 0
++    let swapLock: NSCondition = NSCondition()
++
++    var needsICCUpdate: Bool = false
++
++    @objc init(_ vo: UnsafeMutablePointer<vo>) {
++        let newlog = mp_log_new(vo, vo.pointee.log, "mac")
++        super.init(newlog)
++        mpv = MPVHelper(vo, log)
++        timer =  PreciseTimer(common: self)
++
++        DispatchQueue.main.sync {
++            layer = MetalLayer(common: self)
++            initMisc(vo)
++        }
++    }
++
++    @objc func config(_ vo: UnsafeMutablePointer<vo>) -> Bool {
++        mpv?.vo = vo
++
++        DispatchQueue.main.sync {
++            guard let layer = self.layer else {
++                log.sendError("Something went wrong, no MetalLayer was initialized")
++                exit(1)
++            }
++
++
++            if (mpv?.opts.WinID ?? -1) != -1 {
++                if view == nil {
++                    let cView: View = unsafeBitCast(mpv!.opts.WinID, to: View.self)
++
++                    view = View(frame: cView.frame, common: self)
++                    guard let view = self.view else {
++                        log.sendError("Something went wrong, no View was initialized")
++                        exit(1)
++                    }
++
++                    view.layer = layer
++                    view.wantsLayer = true
++                    view.layerContentsPlacement = .scaleProportionallyToFit
++
++                    cView.addSubview(view)
++                    view.frame = cView.frame
++                }
++            } else {
++                let previousActiveApp = getActiveApp()
++                initApp()
++
++                let (_, _, wr) = getInitProperties(vo)
++
++                if window == nil {
++                    initView(vo, layer)
++                    initWindow(vo, previousActiveApp)
++                    initWindowState()
++                }
++
++                if !NSEqualSizes(window?.unfsContentFramePixel.size ?? NSZeroSize, wr.size) {
++                    window?.updateSize(wr.size)
++                }
++
++                windowDidResize()
++            }
++
++            needsICCUpdate = true
++        }
++
++        return true
++    }
++
++    @objc func uninit(_ vo: UnsafeMutablePointer<vo>) {
++        window?.waitForAnimation()
++
++        DispatchQueue.main.sync {
++            window?.delegate = nil
++            window?.close()
++
++            uninitCommon()
++        }
++    }
++
++    @objc func swapBuffer() {
++        swapLock.lock()
++        //let oldSwapTime = swapTime
++        //while(oldSwapTime == swapTime) {
++        while(swapTime < 1) {
++            swapLock.wait()
++        }
++        swapTime = 0
++        swapLock.unlock()
++
++        if needsICCUpdate {
++            needsICCUpdate = false
++            updateICCProfile()
++        }
++    }
++
++    func updateRenderSize(_ size: NSSize) {
++        mpv?.vo.pointee.dwidth = Int32(size.width)
++        mpv?.vo.pointee.dheight = Int32(size.height)
++        flagEvents(VO_EVENT_RESIZE | VO_EVENT_EXPOSE)
++    }
++
++    // TODO draw in background
++    // TODO proper timing
++    // TODO make time configurable
++    override func displayLinkCallback(_ displayLink: CVDisplayLink,
++                                            _ inNow: UnsafePointer<CVTimeStamp>,
++                                     _ inOutputTime: UnsafePointer<CVTimeStamp>,
++                                          _ flagsIn: CVOptionFlags,
++                                         _ flagsOut: UnsafeMutablePointer<CVOptionFlags>) -> CVReturn
++    {
++        timer?.scheduleAt(time: inOutputTime.pointee.hostTime) {
++            self.swapLock.lock()
++            self.swapTime += 1
++            /*if (self.swapTime > 1) {
++                print("no swap for vysnc, behind: \(self.swapTime)")
++            }*/
++            self.swapLock.signal()
++            self.swapLock.unlock()
++        }
++
++        return kCVReturnSuccess
++    }
++
++    override func startDisplayLink(_ vo: UnsafeMutablePointer<vo>) {
++        super.startDisplayLink(vo)
++        timer?.updatePolicy(refreshRate: currentFps())
++    }
++
++    override func updateDisplaylink() {
++        super.updateDisplaylink()
++        timer?.updatePolicy(refreshRate: currentFps())
++    }
++
++    override func lightSensorUpdate() {
++        flagEvents(VO_EVENT_AMBIENT_LIGHTING_CHANGED)
++    }
++
++    @objc override func updateICCProfile() {
++        guard let colorSpace = window?.screen?.colorSpace else {
++            log.sendWarning("Couldn't update ICC Profile, no color space available")
++            return
++        }
++
++        if #available(macOS 10.11, *) {
++            layer?.colorspace = colorSpace.cgColorSpace
++        }
++
++        flagEvents(VO_EVENT_ICC_PROFILE_CHANGED)
++    }
++
++    override func windowDidResize() {
++        guard let window = window else {
++            log.sendWarning("No window available on window resize event")
++            return
++        }
++
++        updateRenderSize(window.framePixel.size)
++    }
++
++    override func windowDidChangeScreenProfile() {
++        needsICCUpdate = true
++    }
++
++    override func windowDidChangeBackingProperties() {
++        layer?.contentsScale = window?.backingScaleFactor ?? 1
++        windowDidResize()
++    }
++}
+diff -Nur a/video/out/opengl/hwdec_ios.m c/video/out/opengl/hwdec_ios.m
+--- a/video/out/opengl/hwdec_ios.m	2023-09-19 14:18:34.250931000 +0800
++++ c/video/out/opengl/hwdec_ios.m	1970-01-01 08:00:00.000000000 +0800
+@@ -1,278 +0,0 @@
+-/*
+- * Copyright (c) 2013 Stefano Pigozzi <stefano.pigozzi@gmail.com>
+- *               2017 Aman Gupta <ffmpeg@tmm1.net>
+- *
+- * This file is part of mpv.
+- *
+- * mpv is free software; you can redistribute it and/or
+- * modify it under the terms of the GNU Lesser General Public
+- * License as published by the Free Software Foundation; either
+- * version 2.1 of the License, or (at your option) any later version.
+- *
+- * mpv is distributed in the hope that it will be useful,
+- * but WITHOUT ANY WARRANTY; without even the implied warranty of
+- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+- * GNU Lesser General Public License for more details.
+- *
+- * You should have received a copy of the GNU Lesser General Public
+- * License along with mpv.  If not, see <http://www.gnu.org/licenses/>.
+- */
+-
+-#include <assert.h>
+-
+-#include <CoreVideo/CoreVideo.h>
+-#include <OpenGLES/EAGL.h>
+-
+-#include <libavutil/hwcontext.h>
+-
+-#include "video/out/gpu/hwdec.h"
+-#include "video/mp_image_pool.h"
+-#include "ra_gl.h"
+-
+-struct priv_owner {
+-    struct mp_hwdec_ctx hwctx;
+-};
+-
+-struct priv {
+-    CVPixelBufferRef pbuf;
+-    CVOpenGLESTextureCacheRef gl_texture_cache;
+-    CVOpenGLESTextureRef gl_planes[MP_MAX_PLANES];
+-    struct ra_imgfmt_desc desc;
+-};
+-
+-static bool check_hwdec(struct ra_hwdec *hw)
+-{
+-    if (!ra_is_gl(hw->ra_ctx->ra))
+-        return false;
+-
+-    GL *gl = ra_gl_get(hw->ra_ctx->ra);
+-    if (gl->es < 200) {
+-        MP_ERR(hw, "need OpenGLES 2.0 for CVOpenGLESTextureCacheCreateTextureFromImage()\n");
+-        return false;
+-    }
+-
+-    if ([EAGLContext currentContext] == nil) {
+-        MP_ERR(hw, "need a current EAGLContext set\n");
+-        return false;
+-    }
+-
+-    return true;
+-}
+-
+-static int init(struct ra_hwdec *hw)
+-{
+-    struct priv_owner *p = hw->priv;
+-
+-    if (!check_hwdec(hw))
+-        return -1;
+-
+-    p->hwctx = (struct mp_hwdec_ctx){
+-        .driver_name = hw->driver->name,
+-        .hw_imgfmt = IMGFMT_VIDEOTOOLBOX,
+-    };
+-
+-    int ret = av_hwdevice_ctx_create(&p->hwctx.av_device_ref,
+-                                     AV_HWDEVICE_TYPE_VIDEOTOOLBOX, NULL, NULL, 0);
+-    if (ret != 0) {
+-        MP_VERBOSE(hw, "Failed to create hwdevice_ctx: %s\n", av_err2str(ret));
+-        return -1;
+-    }
+-
+-    hwdec_devices_add(hw->devs, &p->hwctx);
+-
+-    return 0;
+-}
+-
+-static void uninit(struct ra_hwdec *hw)
+-{
+-    struct priv_owner *p = hw->priv;
+-
+-    hwdec_devices_remove(hw->devs, &p->hwctx);
+-    av_buffer_unref(&p->hwctx.av_device_ref);
+-}
+-
+-// In GLES3 mode, CVOpenGLESTextureCacheCreateTextureFromImage()
+-// will return error -6683 unless invoked with GL_LUMINANCE and
+-// GL_LUMINANCE_ALPHA (http://stackoverflow.com/q/36213994/332798)
+-// If a format trues to use GL_RED/GL_RG instead, try to find a format
+-// that uses GL_LUMINANCE[_ALPHA] instead.
+-static const struct ra_format *find_la_variant(struct ra *ra,
+-                                               const struct ra_format *fmt)
+-{
+-    GLint internal_format;
+-    GLenum format;
+-    GLenum type;
+-    ra_gl_get_format(fmt, &internal_format, &format, &type);
+-
+-    if (format == GL_RED) {
+-        format = internal_format = GL_LUMINANCE;
+-    } else if (format == GL_RG) {
+-        format = internal_format = GL_LUMINANCE_ALPHA;
+-    } else {
+-        return fmt;
+-    }
+-
+-    for (int n = 0; n < ra->num_formats; n++) {
+-        const struct ra_format *fmt2 = ra->formats[n];
+-        GLint internal_format2;
+-        GLenum format2;
+-        GLenum type2;
+-        ra_gl_get_format(fmt2, &internal_format2, &format2, &type2);
+-        if (internal_format2 == internal_format &&
+-            format2 == format && type2 == type)
+-            return fmt2;
+-    }
+-
+-    return NULL;
+-}
+-
+-static int mapper_init(struct ra_hwdec_mapper *mapper)
+-{
+-    struct priv *p = mapper->priv;
+-
+-    mapper->dst_params = mapper->src_params;
+-    mapper->dst_params.imgfmt = mapper->src_params.hw_subfmt;
+-    mapper->dst_params.hw_subfmt = 0;
+-
+-    if (!mapper->dst_params.imgfmt) {
+-        MP_ERR(mapper, "Unsupported CVPixelBuffer format.\n");
+-        return -1;
+-    }
+-
+-    if (!ra_get_imgfmt_desc(mapper->ra, mapper->dst_params.imgfmt, &p->desc)) {
+-        MP_ERR(mapper, "Unsupported texture format.\n");
+-        return -1;
+-    }
+-
+-    for (int n = 0; n < p->desc.num_planes; n++) {
+-        p->desc.planes[n] = find_la_variant(mapper->ra, p->desc.planes[n]);
+-        if (!p->desc.planes[n] || p->desc.planes[n]->ctype != RA_CTYPE_UNORM) {
+-            MP_ERR(mapper, "Format unsupported.\n");
+-            return -1;
+-        }
+-    }
+-
+-    CVReturn err = CVOpenGLESTextureCacheCreate(
+-        kCFAllocatorDefault,
+-        NULL,
+-        [EAGLContext currentContext],
+-        NULL,
+-        &p->gl_texture_cache);
+-
+-    if (err != noErr) {
+-        MP_ERR(mapper, "Failure in CVOpenGLESTextureCacheCreate: %d\n", err);
+-        return -1;
+-    }
+-
+-    return 0;
+-}
+-
+-static void mapper_unmap(struct ra_hwdec_mapper *mapper)
+-{
+-    struct priv *p = mapper->priv;
+-
+-    for (int i = 0; i < p->desc.num_planes; i++) {
+-        ra_tex_free(mapper->ra, &mapper->tex[i]);
+-        if (p->gl_planes[i]) {
+-            CFRelease(p->gl_planes[i]);
+-            p->gl_planes[i] = NULL;
+-        }
+-    }
+-
+-    CVOpenGLESTextureCacheFlush(p->gl_texture_cache, 0);
+-}
+-
+-static int mapper_map(struct ra_hwdec_mapper *mapper)
+-{
+-    struct priv *p = mapper->priv;
+-    GL *gl = ra_gl_get(mapper->ra);
+-
+-    CVPixelBufferRelease(p->pbuf);
+-    p->pbuf = (CVPixelBufferRef)mapper->src->planes[3];
+-    CVPixelBufferRetain(p->pbuf);
+-
+-    const bool planar = CVPixelBufferIsPlanar(p->pbuf);
+-    const int planes  = CVPixelBufferGetPlaneCount(p->pbuf);
+-    assert((planar && planes == p->desc.num_planes) || p->desc.num_planes == 1);
+-
+-    for (int i = 0; i < p->desc.num_planes; i++) {
+-        const struct ra_format *fmt = p->desc.planes[i];
+-
+-        GLint internal_format;
+-        GLenum format;
+-        GLenum type;
+-        ra_gl_get_format(fmt, &internal_format, &format, &type);
+-
+-        CVReturn err = CVOpenGLESTextureCacheCreateTextureFromImage(
+-            kCFAllocatorDefault,
+-            p->gl_texture_cache,
+-            p->pbuf,
+-            NULL,
+-            GL_TEXTURE_2D,
+-            internal_format,
+-            CVPixelBufferGetWidthOfPlane(p->pbuf, i),
+-            CVPixelBufferGetHeightOfPlane(p->pbuf, i),
+-            format,
+-            type,
+-            i,
+-            &p->gl_planes[i]);
+-
+-        if (err != noErr) {
+-            MP_ERR(mapper, "error creating texture for plane %d: %d\n", i, err);
+-            return -1;
+-        }
+-
+-        gl->BindTexture(GL_TEXTURE_2D, CVOpenGLESTextureGetName(p->gl_planes[i]));
+-        gl->TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+-        gl->TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+-        gl->TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+-        gl->TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+-        gl->BindTexture(GL_TEXTURE_2D, 0);
+-
+-        struct ra_tex_params params = {
+-            .dimensions = 2,
+-            .w = CVPixelBufferGetWidthOfPlane(p->pbuf, i),
+-            .h = CVPixelBufferGetHeightOfPlane(p->pbuf, i),
+-            .d = 1,
+-            .format = fmt,
+-            .render_src = true,
+-            .src_linear = true,
+-        };
+-
+-        mapper->tex[i] = ra_create_wrapped_tex(
+-            mapper->ra,
+-            &params,
+-            CVOpenGLESTextureGetName(p->gl_planes[i])
+-        );
+-        if (!mapper->tex[i])
+-            return -1;
+-    }
+-
+-    return 0;
+-}
+-
+-static void mapper_uninit(struct ra_hwdec_mapper *mapper)
+-{
+-    struct priv *p = mapper->priv;
+-
+-    CVPixelBufferRelease(p->pbuf);
+-    if (p->gl_texture_cache) {
+-        CFRelease(p->gl_texture_cache);
+-        p->gl_texture_cache = NULL;
+-    }
+-}
+-
+-const struct ra_hwdec_driver ra_hwdec_videotoolbox = {
+-    .name = "videotoolbox",
+-    .priv_size = sizeof(struct priv_owner),
+-    .imgfmts = {IMGFMT_VIDEOTOOLBOX, 0},
+-    .init = init,
+-    .uninit = uninit,
+-    .mapper = &(const struct ra_hwdec_mapper_driver){
+-        .priv_size = sizeof(struct priv),
+-        .init = mapper_init,
+-        .uninit = mapper_uninit,
+-        .map = mapper_map,
+-        .unmap = mapper_unmap,
+-    },
+-};
+diff -Nur a/video/out/opengl/hwdec_ios_gl.m c/video/out/opengl/hwdec_ios_gl.m
+--- a/video/out/opengl/hwdec_ios_gl.m	1970-01-01 08:00:00.000000000 +0800
++++ c/video/out/opengl/hwdec_ios_gl.m	2023-09-19 14:30:27.575759056 +0800
+@@ -0,0 +1,224 @@
++/*
++ * Copyright (c) 2013 Stefano Pigozzi <stefano.pigozzi@gmail.com>
++ *               2017 Aman Gupta <ffmpeg@tmm1.net>
++ *
++ * This file is part of mpv.
++ *
++ * mpv is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * mpv is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with mpv.  If not, see <http://www.gnu.org/licenses/>.
++ */
++
++#include <assert.h>
++
++#include <CoreVideo/CoreVideo.h>
++#include <OpenGLES/EAGL.h>
++
++#include <libavutil/hwcontext.h>
++
++#include "video/out/gpu/hwdec.h"
++#include "video/mp_image_pool.h"
++//#include "ra_gl.h"
++#include "video/out/opengl/ra_gl.h"
++#include "hwdec_vt.h"
++
++
++static bool check_hwdec(const struct ra_hwdec *hw)
++{
++    if (!ra_is_gl(hw->ra_ctx->ra))
++        return false;
++
++    GL *gl = ra_gl_get(hw->ra_ctx->ra);
++    if (gl->es < 200) {
++        MP_ERR(hw, "need OpenGLES 2.0 for CVOpenGLESTextureCacheCreateTextureFromImage()\n");
++        return false;
++    }
++
++    if ([EAGLContext currentContext] == nil) {
++        MP_ERR(hw, "need a current EAGLContext set\n");
++        return false;
++    }
++
++    return true;
++}
++
++// In GLES3 mode, CVOpenGLESTextureCacheCreateTextureFromImage()
++// will return error -6683 unless invoked with GL_LUMINANCE and
++// GL_LUMINANCE_ALPHA (http://stackoverflow.com/q/36213994/332798)
++// If a format trues to use GL_RED/GL_RG instead, try to find a format
++// that uses GL_LUMINANCE[_ALPHA] instead.
++static const struct ra_format *find_la_variant(struct ra *ra,
++                                               const struct ra_format *fmt)
++{
++    GLint internal_format;
++    GLenum format;
++    GLenum type;
++    ra_gl_get_format(fmt, &internal_format, &format, &type);
++
++    if (format == GL_RED) {
++        format = internal_format = GL_LUMINANCE;
++    } else if (format == GL_RG) {
++        format = internal_format = GL_LUMINANCE_ALPHA;
++    } else {
++        return fmt;
++    }
++
++    for (int n = 0; n < ra->num_formats; n++) {
++        const struct ra_format *fmt2 = ra->formats[n];
++        GLint internal_format2;
++        GLenum format2;
++        GLenum type2;
++        ra_gl_get_format(fmt2, &internal_format2, &format2, &type2);
++        if (internal_format2 == internal_format &&
++            format2 == format && type2 == type)
++            return fmt2;
++    }
++
++    return NULL;
++}
++
++static int mapper_init(struct ra_hwdec_mapper *mapper)
++{
++    struct priv *p = mapper->priv;
++
++    for (int n = 0; n < p->desc.num_planes; n++) {
++        p->desc.planes[n] = find_la_variant(mapper->ra, p->desc.planes[n]);
++        if (!p->desc.planes[n] || p->desc.planes[n]->ctype != RA_CTYPE_UNORM) {
++            MP_ERR(mapper, "Format unsupported.\n");
++            return -1;
++        }
++    }
++
++    CVReturn err = CVOpenGLESTextureCacheCreate(
++        kCFAllocatorDefault,
++        NULL,
++        [EAGLContext currentContext],
++        NULL,
++        &p->gl_texture_cache);
++
++    if (err != noErr) {
++        MP_ERR(mapper, "Failure in CVOpenGLESTextureCacheCreate: %d\n", err);
++        return -1;
++    }
++
++    return 0;
++}
++
++static void mapper_unmap(struct ra_hwdec_mapper *mapper)
++{
++    struct priv *p = mapper->priv;
++
++    for (int i = 0; i < p->desc.num_planes; i++) {
++        ra_tex_free(mapper->ra, &mapper->tex[i]);
++        if (p->gl_planes[i]) {
++            CFRelease(p->gl_planes[i]);
++            p->gl_planes[i] = NULL;
++        }
++    }
++
++    CVOpenGLESTextureCacheFlush(p->gl_texture_cache, 0);
++}
++
++static int mapper_map(struct ra_hwdec_mapper *mapper)
++{
++    struct priv *p = mapper->priv;
++    GL *gl = ra_gl_get(mapper->ra);
++
++    CVPixelBufferRelease(p->pbuf);
++    p->pbuf = (CVPixelBufferRef)mapper->src->planes[3];
++    CVPixelBufferRetain(p->pbuf);
++
++    const bool planar = CVPixelBufferIsPlanar(p->pbuf);
++    const int planes  = CVPixelBufferGetPlaneCount(p->pbuf);
++    assert((planar && planes == p->desc.num_planes) || p->desc.num_planes == 1);
++
++    for (int i = 0; i < p->desc.num_planes; i++) {
++        const struct ra_format *fmt = p->desc.planes[i];
++
++        GLint internal_format;
++        GLenum format;
++        GLenum type;
++        ra_gl_get_format(fmt, &internal_format, &format, &type);
++
++        CVReturn err = CVOpenGLESTextureCacheCreateTextureFromImage(
++            kCFAllocatorDefault,
++            p->gl_texture_cache,
++            p->pbuf,
++            NULL,
++            GL_TEXTURE_2D,
++            internal_format,
++            CVPixelBufferGetWidthOfPlane(p->pbuf, i),
++            CVPixelBufferGetHeightOfPlane(p->pbuf, i),
++            format,
++            type,
++            i,
++            &p->gl_planes[i]);
++
++        if (err != noErr) {
++            MP_ERR(mapper, "error creating texture for plane %d: %d\n", i, err);
++            return -1;
++        }
++
++        gl->BindTexture(GL_TEXTURE_2D, CVOpenGLESTextureGetName(p->gl_planes[i]));
++        gl->TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
++        gl->TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
++        gl->TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
++        gl->TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
++        gl->BindTexture(GL_TEXTURE_2D, 0);
++
++        struct ra_tex_params params = {
++            .dimensions = 2,
++            .w = CVPixelBufferGetWidthOfPlane(p->pbuf, i),
++            .h = CVPixelBufferGetHeightOfPlane(p->pbuf, i),
++            .d = 1,
++            .format = fmt,
++            .render_src = true,
++            .src_linear = true,
++        };
++
++        mapper->tex[i] = ra_create_wrapped_tex(
++            mapper->ra,
++            &params,
++            CVOpenGLESTextureGetName(p->gl_planes[i])
++        );
++        if (!mapper->tex[i])
++            return -1;
++    }
++
++    return 0;
++}
++
++static void mapper_uninit(struct ra_hwdec_mapper *mapper)
++{
++    struct priv *p = mapper->priv;
++
++    CVPixelBufferRelease(p->pbuf);
++    if (p->gl_texture_cache) {
++        CFRelease(p->gl_texture_cache);
++        p->gl_texture_cache = NULL;
++    }
++}
++
++bool vt_gl_init(const struct ra_hwdec *hw)
++{
++    struct priv_owner *p = hw->priv;
++
++    if (!check_hwdec(hw))
++        return false;
++
++    p->interop_init   = mapper_init;
++    p->interop_uninit = mapper_uninit;
++    p->interop_map    = mapper_map;
++    p->interop_unmap  = mapper_unmap;
++
++    return true;
++}
+diff -Nur a/video/out/hwdec/hwdec_mac_gl.c c/video/out/hwdec/hwdec_mac_gl.c
+--- a/video/out/hwdec/hwdec_mac_gl.c	1970-01-01 08:00:00.000000000 +0800
++++ c/video/out/hwdec/hwdec_mac_gl.c	2023-09-19 14:32:04.059597772 +0800
+@@ -0,0 +1,169 @@
++/*
++ * Copyright (c) 2013 Stefano Pigozzi <stefano.pigozzi@gmail.com>
++ *
++ * This file is part of mpv.
++ *
++ * mpv is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * mpv is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with mpv.  If not, see <http://www.gnu.org/licenses/>.
++ */
++
++#include <assert.h>
++
++#include <IOSurface/IOSurface.h>
++#include <CoreVideo/CoreVideo.h>
++#include <OpenGL/OpenGL.h>
++#include <OpenGL/CGLIOSurface.h>
++
++#include <libavutil/hwcontext.h>
++
++#include "video/mp_image_pool.h"
++#include "video/out/gpu/hwdec.h"
++//#include "ra_gl.h"
++#include "video/out/opengl/ra_gl.h"
++#include "hwdec_vt.h"
++
++static bool check_hwdec(const struct ra_hwdec *hw)
++{
++    if (!ra_is_gl(hw->ra_ctx->ra))
++        return false;
++
++    GL *gl = ra_gl_get(hw->ra_ctx->ra);
++    if (gl->version < 300) {
++        MP_ERR(hw, "need >= OpenGL 3.0 for core rectangle texture support\n");
++        return false;
++    }
++
++    if (!CGLGetCurrentContext()) {
++        MP_ERR(hw, "need cocoa opengl backend to be active");
++        return false;
++    }
++
++    return true;
++}
++
++static int mapper_init(struct ra_hwdec_mapper *mapper)
++{
++    struct priv *p = mapper->priv;
++    GL *gl = ra_gl_get(mapper->ra);
++
++    gl->GenTextures(MP_MAX_PLANES, p->gl_planes);
++
++    for (int n = 0; n < p->desc.num_planes; n++) {
++        if (p->desc.planes[n]->ctype != RA_CTYPE_UNORM) {
++            MP_ERR(mapper, "Format unsupported.\n");
++            return -1;
++        }
++    }
++    return 0;
++}
++
++static void mapper_unmap(struct ra_hwdec_mapper *mapper)
++{
++    struct priv *p = mapper->priv;
++
++    // Is this sane? No idea how to release the texture without deleting it.
++    CVPixelBufferRelease(p->pbuf);
++    p->pbuf = NULL;
++
++    for (int i = 0; i < p->desc.num_planes; i++)
++        ra_tex_free(mapper->ra, &mapper->tex[i]);
++}
++
++static int mapper_map(struct ra_hwdec_mapper *mapper)
++{
++    struct priv *p = mapper->priv;
++    GL *gl = ra_gl_get(mapper->ra);
++
++    CVPixelBufferRelease(p->pbuf);
++    p->pbuf = (CVPixelBufferRef)mapper->src->planes[3];
++    CVPixelBufferRetain(p->pbuf);
++    IOSurfaceRef surface = CVPixelBufferGetIOSurface(p->pbuf);
++    if (!surface) {
++        MP_ERR(mapper, "CVPixelBuffer has no IOSurface\n");
++        return -1;
++    }
++
++    const bool planar = CVPixelBufferIsPlanar(p->pbuf);
++    const int planes  = CVPixelBufferGetPlaneCount(p->pbuf);
++    assert((planar && planes == p->desc.num_planes) || p->desc.num_planes == 1);
++
++    GLenum gl_target = GL_TEXTURE_RECTANGLE;
++
++    for (int i = 0; i < p->desc.num_planes; i++) {
++        const struct ra_format *fmt = p->desc.planes[i];
++
++        GLint internal_format;
++        GLenum format;
++        GLenum type;
++        ra_gl_get_format(fmt, &internal_format, &format, &type);
++
++        gl->BindTexture(gl_target, p->gl_planes[i]);
++
++        CGLError err = CGLTexImageIOSurface2D(
++            CGLGetCurrentContext(), gl_target,
++            internal_format,
++            IOSurfaceGetWidthOfPlane(surface, i),
++            IOSurfaceGetHeightOfPlane(surface, i),
++            format, type, surface, i);
++
++        gl->BindTexture(gl_target, 0);
++
++        if (err != kCGLNoError) {
++            MP_ERR(mapper,
++                   "error creating IOSurface texture for plane %d: %s (%x)\n",
++                   i, CGLErrorString(err), gl->GetError());
++            return -1;
++        }
++
++        struct ra_tex_params params = {
++            .dimensions = 2,
++            .w = IOSurfaceGetWidthOfPlane(surface, i),
++            .h = IOSurfaceGetHeightOfPlane(surface, i),
++            .d = 1,
++            .format = fmt,
++            .render_src = true,
++            .src_linear = true,
++            .non_normalized = gl_target == GL_TEXTURE_RECTANGLE,
++        };
++
++        mapper->tex[i] = ra_create_wrapped_tex(mapper->ra, &params,
++                                               p->gl_planes[i]);
++        if (!mapper->tex[i])
++            return -1;
++    }
++
++    return 0;
++}
++
++static void mapper_uninit(struct ra_hwdec_mapper *mapper)
++{
++    struct priv *p = mapper->priv;
++    GL *gl = ra_gl_get(mapper->ra);
++
++    gl->DeleteTextures(MP_MAX_PLANES, p->gl_planes);
++}
++
++bool vt_gl_init(const struct ra_hwdec *hw)
++{
++    struct priv_owner *p = hw->priv;
++
++    if (!check_hwdec(hw))
++        return false;
++
++    p->interop_init   = mapper_init;
++    p->interop_uninit = mapper_uninit;
++    p->interop_map    = mapper_map;
++    p->interop_unmap  = mapper_unmap;
++
++    return true;
++}
+diff -Nur a/video/out/opengl/hwdec_osx.c c/video/out/opengl/hwdec_osx.c
+--- a/video/out/opengl/hwdec_osx.c	2023-09-19 14:18:34.251036000 +0800
++++ c/video/out/opengl/hwdec_osx.c	1970-01-01 08:00:00.000000000 +0800
+@@ -1,224 +0,0 @@
+-/*
+- * Copyright (c) 2013 Stefano Pigozzi <stefano.pigozzi@gmail.com>
+- *
+- * This file is part of mpv.
+- *
+- * mpv is free software; you can redistribute it and/or
+- * modify it under the terms of the GNU Lesser General Public
+- * License as published by the Free Software Foundation; either
+- * version 2.1 of the License, or (at your option) any later version.
+- *
+- * mpv is distributed in the hope that it will be useful,
+- * but WITHOUT ANY WARRANTY; without even the implied warranty of
+- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+- * GNU Lesser General Public License for more details.
+- *
+- * You should have received a copy of the GNU Lesser General Public
+- * License along with mpv.  If not, see <http://www.gnu.org/licenses/>.
+- */
+-
+-#include <assert.h>
+-
+-#include <IOSurface/IOSurface.h>
+-#include <CoreVideo/CoreVideo.h>
+-#include <OpenGL/OpenGL.h>
+-#include <OpenGL/CGLIOSurface.h>
+-
+-#include <libavutil/hwcontext.h>
+-
+-#include "video/mp_image_pool.h"
+-#include "video/out/gpu/hwdec.h"
+-#include "ra_gl.h"
+-
+-struct priv_owner {
+-    struct mp_hwdec_ctx hwctx;
+-};
+-
+-struct priv {
+-    CVPixelBufferRef pbuf;
+-    GLuint gl_planes[MP_MAX_PLANES];
+-
+-    struct ra_imgfmt_desc desc;
+-};
+-
+-static bool check_hwdec(struct ra_hwdec *hw)
+-{
+-    if (!ra_is_gl(hw->ra_ctx->ra))
+-        return false;
+-
+-    GL *gl = ra_gl_get(hw->ra_ctx->ra);
+-    if (gl->version < 300) {
+-        MP_ERR(hw, "need >= OpenGL 3.0 for core rectangle texture support\n");
+-        return false;
+-    }
+-
+-    if (!CGLGetCurrentContext()) {
+-        MP_ERR(hw, "need cocoa opengl backend to be active");
+-        return false;
+-    }
+-
+-    return true;
+-}
+-
+-static int init(struct ra_hwdec *hw)
+-{
+-    struct priv_owner *p = hw->priv;
+-
+-    if (!check_hwdec(hw))
+-        return -1;
+-
+-    p->hwctx = (struct mp_hwdec_ctx){
+-        .driver_name = hw->driver->name,
+-        .hw_imgfmt = IMGFMT_VIDEOTOOLBOX,
+-    };
+-
+-    int ret = av_hwdevice_ctx_create(&p->hwctx.av_device_ref,
+-                                     AV_HWDEVICE_TYPE_VIDEOTOOLBOX, NULL, NULL, 0);
+-    if (ret != 0) {
+-        MP_VERBOSE(hw, "Failed to create hwdevice_ctx: %s\n", av_err2str(ret));
+-        return -1;
+-    }
+-
+-    hwdec_devices_add(hw->devs, &p->hwctx);
+-
+-    return 0;
+-}
+-
+-static void uninit(struct ra_hwdec *hw)
+-{
+-    struct priv_owner *p = hw->priv;
+-
+-    hwdec_devices_remove(hw->devs, &p->hwctx);
+-    av_buffer_unref(&p->hwctx.av_device_ref);
+-}
+-
+-static int mapper_init(struct ra_hwdec_mapper *mapper)
+-{
+-    struct priv *p = mapper->priv;
+-    GL *gl = ra_gl_get(mapper->ra);
+-
+-    gl->GenTextures(MP_MAX_PLANES, p->gl_planes);
+-
+-    mapper->dst_params = mapper->src_params;
+-    mapper->dst_params.imgfmt = mapper->src_params.hw_subfmt;
+-    mapper->dst_params.hw_subfmt = 0;
+-
+-    if (!mapper->dst_params.imgfmt) {
+-        MP_ERR(mapper, "Unsupported CVPixelBuffer format.\n");
+-        return -1;
+-    }
+-
+-    if (!ra_get_imgfmt_desc(mapper->ra, mapper->dst_params.imgfmt, &p->desc)) {
+-        MP_ERR(mapper, "Unsupported texture format.\n");
+-        return -1;
+-    }
+-
+-    for (int n = 0; n < p->desc.num_planes; n++) {
+-        if (p->desc.planes[n]->ctype != RA_CTYPE_UNORM) {
+-            MP_ERR(mapper, "Format unsupported.\n");
+-            return -1;
+-        }
+-    }
+-    return 0;
+-}
+-
+-static void mapper_unmap(struct ra_hwdec_mapper *mapper)
+-{
+-    struct priv *p = mapper->priv;
+-
+-    // Is this sane? No idea how to release the texture without deleting it.
+-    CVPixelBufferRelease(p->pbuf);
+-    p->pbuf = NULL;
+-
+-    for (int i = 0; i < p->desc.num_planes; i++)
+-        ra_tex_free(mapper->ra, &mapper->tex[i]);
+-}
+-
+-static int mapper_map(struct ra_hwdec_mapper *mapper)
+-{
+-    struct priv *p = mapper->priv;
+-    GL *gl = ra_gl_get(mapper->ra);
+-
+-    CVPixelBufferRelease(p->pbuf);
+-    p->pbuf = (CVPixelBufferRef)mapper->src->planes[3];
+-    CVPixelBufferRetain(p->pbuf);
+-    IOSurfaceRef surface = CVPixelBufferGetIOSurface(p->pbuf);
+-    if (!surface) {
+-        MP_ERR(mapper, "CVPixelBuffer has no IOSurface\n");
+-        return -1;
+-    }
+-
+-    const bool planar = CVPixelBufferIsPlanar(p->pbuf);
+-    const int planes  = CVPixelBufferGetPlaneCount(p->pbuf);
+-    assert((planar && planes == p->desc.num_planes) || p->desc.num_planes == 1);
+-
+-    GLenum gl_target = GL_TEXTURE_RECTANGLE;
+-
+-    for (int i = 0; i < p->desc.num_planes; i++) {
+-        const struct ra_format *fmt = p->desc.planes[i];
+-
+-        GLint internal_format;
+-        GLenum format;
+-        GLenum type;
+-        ra_gl_get_format(fmt, &internal_format, &format, &type);
+-
+-        gl->BindTexture(gl_target, p->gl_planes[i]);
+-
+-        CGLError err = CGLTexImageIOSurface2D(
+-            CGLGetCurrentContext(), gl_target,
+-            internal_format,
+-            IOSurfaceGetWidthOfPlane(surface, i),
+-            IOSurfaceGetHeightOfPlane(surface, i),
+-            format, type, surface, i);
+-
+-        gl->BindTexture(gl_target, 0);
+-
+-        if (err != kCGLNoError) {
+-            MP_ERR(mapper,
+-                   "error creating IOSurface texture for plane %d: %s (%x)\n",
+-                   i, CGLErrorString(err), gl->GetError());
+-            return -1;
+-        }
+-
+-        struct ra_tex_params params = {
+-            .dimensions = 2,
+-            .w = IOSurfaceGetWidthOfPlane(surface, i),
+-            .h = IOSurfaceGetHeightOfPlane(surface, i),
+-            .d = 1,
+-            .format = fmt,
+-            .render_src = true,
+-            .src_linear = true,
+-            .non_normalized = gl_target == GL_TEXTURE_RECTANGLE,
+-        };
+-
+-        mapper->tex[i] = ra_create_wrapped_tex(mapper->ra, &params,
+-                                               p->gl_planes[i]);
+-        if (!mapper->tex[i])
+-            return -1;
+-    }
+-
+-    return 0;
+-}
+-
+-static void mapper_uninit(struct ra_hwdec_mapper *mapper)
+-{
+-    struct priv *p = mapper->priv;
+-    GL *gl = ra_gl_get(mapper->ra);
+-
+-    gl->DeleteTextures(MP_MAX_PLANES, p->gl_planes);
+-}
+-
+-const struct ra_hwdec_driver ra_hwdec_videotoolbox = {
+-    .name = "videotoolbox",
+-    .priv_size = sizeof(struct priv_owner),
+-    .imgfmts = {IMGFMT_VIDEOTOOLBOX, 0},
+-    .init = init,
+-    .uninit = uninit,
+-    .mapper = &(const struct ra_hwdec_mapper_driver){
+-        .priv_size = sizeof(struct priv),
+-        .init = mapper_init,
+-        .uninit = mapper_uninit,
+-        .map = mapper_map,
+-        .unmap = mapper_unmap,
+-    },
+-};
+diff -Nur a/video/out/vulkan/common.h c/video/out/vulkan/common.h
+--- a/video/out/vulkan/common.h	2023-09-19 14:18:34.255096000 +0800
++++ c/video/out/vulkan/common.h	2023-09-19 14:23:37.798185000 +0800
+@@ -22,6 +22,11 @@
+ #if HAVE_WIN32_DESKTOP
+ #define VK_USE_PLATFORM_WIN32_KHR
+ #endif
++// check for molten instead?
++#if HAVE_COCOA
++#define VK_USE_PLATFORM_MACOS_MVK
++#define VK_USE_PLATFORM_METAL_EXT
++#endif
+ 
+ #include <libplacebo/vulkan.h>
+ 
+diff -Nur a/video/out/vulkan/context_mac.m c/video/out/vulkan/context_mac.m
+--- a/video/out/vulkan/context_mac.m	1970-01-01 08:00:00.000000000 +0800
++++ c/video/out/vulkan/context_mac.m	2023-09-19 14:23:37.798297000 +0800
+@@ -0,0 +1,123 @@
++/*
++ * This file is part of mpv.
++ *
++ * mpv is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * mpv is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with mpv.  If not, see <http://www.gnu.org/licenses/>.
++ */
++
++#include "video/out/gpu/context.h"
++#include "osdep/macOS_swift.h"
++
++//#import <MoltenVK/mvk_vulkan.h>
++
++#include "common.h"
++#include "context.h"
++#include "utils.h"
++
++struct priv {
++    struct mpvk_ctx vk;
++    MacCommon *vo_macos;
++};
++
++
++static void macos_vk_uninit(struct ra_ctx *ctx)
++{
++    struct priv *p = ctx->priv;
++
++    ra_vk_ctx_uninit(ctx);
++    mpvk_uninit(&p->vk);
++    [p->vo_macos uninit:ctx->vo];
++}
++
++static void macos_vk_swap_buffers(struct ra_ctx *ctx)
++{
++    struct priv *p = ctx->priv;
++    [p->vo_macos swapBuffer];
++}
++
++static bool macos_vk_init(struct ra_ctx *ctx)
++{
++    struct priv *p = ctx->priv = talloc_zero(ctx, struct priv);
++    struct mpvk_ctx *vk = &p->vk;
++    int msgl = ctx->opts.probing ? MSGL_V : MSGL_ERR;
++
++    if (!mpvk_init(vk, ctx, VK_EXT_METAL_SURFACE_EXTENSION_NAME))
++        goto error;
++
++    p->vo_macos = [[MacCommon alloc] init:ctx->vo];
++    if (!p->vo_macos)
++        goto error;
++
++    VkMetalSurfaceCreateInfoEXT macos_info = {
++        .sType = VK_STRUCTURE_TYPE_MACOS_SURFACE_CREATE_INFO_MVK,
++        .pNext = NULL,
++        .flags = 0,
++        .pLayer = p->vo_macos.layer,
++    };
++
++    struct ra_vk_ctx_params params = {
++        .swap_buffers = macos_vk_swap_buffers,
++    };
++
++    VkInstance inst = vk->vkinst->instance;
++    VkResult res = vkCreateMetalSurfaceEXT(inst, &macos_info, NULL, &vk->surface);
++    if (res != VK_SUCCESS) {
++        MP_MSG(ctx, msgl, "Failed creating macos surface\n");
++        goto error;
++    }
++
++    if (!ra_vk_ctx_init(ctx, vk, params, VK_PRESENT_MODE_FIFO_KHR))
++        goto error;
++
++    return true;
++error:
++    if (p->vo_macos)
++        [p->vo_macos uninit:ctx->vo];
++    return false;
++}
++
++static bool resize(struct ra_ctx *ctx)
++{
++
++    return ra_vk_ctx_resize(ctx, ctx->vo->dwidth, ctx->vo->dheight);
++}
++
++static bool macos_vk_reconfig(struct ra_ctx *ctx)
++{
++    struct priv *p = ctx->priv;
++    if (![p->vo_macos config:ctx->vo])
++        return false;
++    return true;
++}
++
++static int macos_vk_control(struct ra_ctx *ctx, int *events, int request, void *arg)
++{
++    struct priv *p = ctx->priv;
++    int ret = [p->vo_macos control:ctx->vo events:events request:request data:arg];
++
++    if (*events & VO_EVENT_RESIZE) {
++        if (!resize(ctx))
++            return VO_ERROR;
++    }
++
++    return ret;
++}
++
++const struct ra_ctx_fns ra_ctx_vulkan_macos = {
++    .type           = "vulkan",
++    .name           = "macosvk",
++    .reconfig       = macos_vk_reconfig,
++    .control        = macos_vk_control,
++    .init           = macos_vk_init,
++    .uninit         = macos_vk_uninit,
++};

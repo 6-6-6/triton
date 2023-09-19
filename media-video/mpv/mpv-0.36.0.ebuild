@@ -90,7 +90,7 @@ COMMON_DEPEND="
 		<media-libs/libplacebo-6
 		egl? ( media-libs/libplacebo[opengl] )
 	)
-	<media-libs/libplacebo-6
+	media-libs/libplacebo
 	lua? ( ${LUA_DEPS} )
 	openal? ( media-libs/openal )
 	pipewire? ( media-video/pipewire:= )
@@ -136,7 +136,7 @@ BDEPEND="
 
 PATCHES=(
 	"${FILESDIR}"/${PN}-0.36.0-darwin-hdr.patch
-	"${FILESDIR}"/${PN}-0.36.0-darwin-no-khr-display.patch
+	"${FILESDIR}"/${PN}-0.36.0-darwin-vulkan-support.patch
 )
 
 pkg_setup() {
@@ -228,6 +228,7 @@ src_configure() {
 		$(meson_feature raspberry-pi rpi)
 
 		-Dvulkan=enabled
+#-Dvulkan-interop=enabled
 		$(meson_feature vulkan shaderc)
 
 		# hardware decoding

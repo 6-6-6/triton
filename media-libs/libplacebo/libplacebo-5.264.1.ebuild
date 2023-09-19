@@ -25,7 +25,7 @@ LICENSE="LGPL-2.1+ opengl? ( MIT )"
 SLOT="0/$(ver_cut 2 ${PV}.9999)" # soname
 IUSE="glslang lcms llvm-libunwind +opengl +shaderc test unwind +vulkan"
 RESTRICT="!test? ( test )"
-#REQUIRED_USE="vulkan? ( || ( glslang shaderc ) )"
+REQUIRED_USE="vulkan? ( || ( glslang shaderc ) )"
 
 # libglvnd is used with dlopen() through glad (inc. egl/gles)
 RDEPEND="
@@ -36,8 +36,9 @@ RDEPEND="
 		llvm-libunwind? ( sys-libs/llvm-libunwind[${MULTILIB_USEDEP}] )
 		!llvm-libunwind? ( sys-libs/libunwind:=[${MULTILIB_USEDEP}] )
 	)
-	vulkan? ( media-libs/vulkan-loader[${MULTILIB_USEDEP}]
-		  swift-libs/MoltenVK[${MULTILIB_USEDEP}]
+	vulkan? (
+		swift-libs/MoltenVK[-only-vulkan,${MULTILIB_USEDEP}]
+		media-libs/vulkan-loader[${MULTILIB_USEDEP}]
 	)"
 #	opengl? ( media-libs/libglvnd[${MULTILIB_USEDEP}] )
 # vulkan-headers is required even with USE=-vulkan (bug #882065)

@@ -11,20 +11,21 @@ LICENSE="Apache-2.0"
 SLOT="0"
 KEYWORDS="~amd64-macos ~arm64-macos"
 
-IUSE=""
+IUSE="only-vulkan"
 
-DEPENDSSS="
-	dev-libs/cereal
-	dev-util/glslang
-	dev-util/spirv-headers
-	dev-util/spirv-tools
+DEPEND="
+	only-vulkan? (
+		!media-libs/vulkan-loader
+	)
 	dev-util/vulkan-headers
 "
 
 S="${WORKDIR}/${PN}"
 
 src_compile() {
-	sed -i "s#./libMoltenVK.dylib#${EPREFIX}/usr/lib/libMoltenVK.dylib#" MoltenVK/dylib/macOS/MoltenVK_icd.json
+	# adjust icd
+	sed -i "s#./libMoltenVK.dylib#${EPREFIX}/usr/lib/libMoltenVK.dylib#" MoltenVK/dylib/macOS/MoltenVK_icd.json || die
+	sed -i "s#portability_driver\" : true#portability_driver\" : false#" MoltenVK/dylib/macOS/MoltenVK_icd.json || die
 	/usr/bin/install_name_tool -change \
 		/usr/lib/libc++.1.dylib \
 		${EREFIX}/usr/lib/libc++.1.dylib \
@@ -49,4 +50,10 @@ src_install() {
 	dodir /usr/include
 	insinto /usr/include
 	doins -r MoltenVK/include/MoltenVK
+
+	if use only-vulkan; then
+		dodir /usr/lib/pkgconfig/
+		insinto /usr/lib/pkgconfig/
+		doins "${FILESDIR}"/vulkan.pc
+	fi
 }

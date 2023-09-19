@@ -1,9 +1,12 @@
  - reuse the owner's procedure to prepare libs
  
- - /opt/lumiere/usr/local/bin/xcodebuild build -project MoltenVKShaderConverter/MoltenVKShaderConverter.xcodeproj -target MoltenVKShaderConverter-macOS -arch arm64
+ - /opt/lumiere/usr/local/bin/xcodebuild build -sdk /opt/lumiere/MacOSX.sdk -project MoltenVKShaderConverter/MoltenVKShaderConverter.xcodeproj -target MoltenVKShaderConverter-macOS -arch arm64
  - redo libtool using prefix'one
 
  - patch create_dylib.sh (use things inside prefix)
- - /opt/lumiere/usr/local/bin/xcodebuild build -project MoltenVK/MoltenVK.xcodeproj -target MoltenVK-macOS -arch arm64
+ - /opt/lumiere/usr/local/bin/xcodebuild build -sdk /opt/lumiere/MacOSX.sdk -project MoltenVK/MoltenVK.xcodeproj -target MoltenVK-macOS -arch arm64
+
+ - link?
+ arm64-apple-darwin22-clang++ -L/opt/lumiere/usr/lib -stdlib=libc++ -dynamiclib -arch arm64 -mmacosx-version-min=10.13 -compatibility_version 1.0.0 -current_version 1.0.0 -install_name /opt/lumiere/usr/lib/libMoltenVK.dylib -Wno-incompatible-sysroot -Xlinker -w -framework Metal -framework IOSurface -framework AppKit -framework QuartzCore -framework CoreGraphics -framework IOKit -framework Foundation -flto -o /Volumes/Meteora/gentoo/build/MoltenVK/MoltenVK-1.2.5/MoltenVK/build/Release/dynamic/libMoltenVK.dylib -force_load /Volumes/Meteora/gentoo/build/MoltenVK/MoltenVK-1.2.5/MoltenVK/build/Release/libMoltenVK.a -O3
 
  - should work?
