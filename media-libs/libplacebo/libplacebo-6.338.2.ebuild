@@ -1,5 +1,6 @@
-# Copyright 1999-2023 Gentoo Authors
+# Copyright 1999-2024 Gentoo Authors
 # Distributed under the terms of the GNU General Public License v2
+#memo: src/glsl/meson.build: no static spriv
 
 EAPI=8
 
@@ -11,23 +12,37 @@ if [[ ${PV} == 9999 ]]; then
 	inherit git-r3
 else
 	GLAD_PV=2.0.4
+	FASTFLOAT_PV=5.2.0
 	SRC_URI="
-		https://code.videolan.org/videolan/libplacebo/-/archive/v${PV}/libplacebo-v${PV}.tar.gz
-		opengl? ( https://github.com/Dav1dde/glad/archive/refs/tags/v${GLAD_PV}.tar.gz -> ${PN}-glad-${GLAD_PV}.tar.gz )"
+		https://code.videolan.org/videolan/libplacebo/-/archive/v${PV}/libplacebo-v${PV}.tar.bz2
+		https://github.com/fastfloat/fast_float/archive/refs/tags/v${FASTFLOAT_PV}.tar.gz
+			-> fast_float-${FASTFLOAT_PV}.tar.gz
+		opengl? (
+			https://github.com/Dav1dde/glad/archive/refs/tags/v${GLAD_PV}.tar.gz
+				-> ${PN}-glad-${GLAD_PV}.tar.gz
+		)
+	"
 	S="${WORKDIR}/${PN}-v${PV}"
-	KEYWORDS="~arm64-macos"
+	KEYWORDS="amd64 ~arm arm64 ~hppa ~loong ppc ppc64 ~riscv x86"
 fi
 
 DESCRIPTION="Reusable library for GPU-accelerated image processing primitives"
-HOMEPAGE="https://code.videolan.org/videolan/libplacebo/"
+HOMEPAGE="
+	https://libplacebo.org/
+	https://code.videolan.org/videolan/libplacebo/
+"
 
-LICENSE="LGPL-2.1+ opengl? ( MIT )"
+LICENSE="
+	LGPL-2.1+
+	|| ( Apache-2.0 Boost-1.0 MIT )
+	opengl? ( MIT )
+"
 SLOT="0/$(ver_cut 2 ${PV}.9999)" # soname
-IUSE="glslang lcms llvm-libunwind +opengl +shaderc test unwind +vulkan"
+IUSE="glslang +lcms llvm-libunwind +opengl +shaderc test unwind +vulkan xxhash"
 RESTRICT="!test? ( test )"
 REQUIRED_USE="vulkan? ( || ( glslang shaderc ) )"
 
-# libglvnd is used with dlopen() through glad (inc. egl/gles)
+# dlopen: libglvnd (glad)
 RDEPEND="
 	lcms? ( media-libs/lcms:2[${MULTILIB_USEDEP}] )
 	shaderc? ( media-libs/shaderc[${MULTILIB_USEDEP}] )
@@ -36,18 +51,19 @@ RDEPEND="
 		llvm-libunwind? ( sys-libs/llvm-libunwind[${MULTILIB_USEDEP}] )
 		!llvm-libunwind? ( sys-libs/libunwind:=[${MULTILIB_USEDEP}] )
 	)
-	vulkan? (
-		swift-libs/MoltenVK[-only-vulkan,${MULTILIB_USEDEP}]
-		media-libs/vulkan-loader[${MULTILIB_USEDEP}]
-	)"
-#	opengl? ( media-libs/libglvnd[${MULTILIB_USEDEP}] )
-# vulkan-headers is required even with USE=-vulkan (bug #882065)
+	vulkan? ( media-libs/vulkan-loader[${MULTILIB_USEDEP}] )
+	vulkan? ( swift-libs/MoltenVK[-only-vulkan,${MULTILIB_USEDEP}] )
+"
+# vulkan-headers is required even with USE=-vulkan for the stub (bug #882065)
 DEPEND="
 	${RDEPEND}
-	dev-util/vulkan-headers"
+	dev-util/vulkan-headers
+	xxhash? ( dev-libs/xxhash[${MULTILIB_USEDEP}] )
+"
 BDEPEND="
 	$(python_gen_any_dep 'dev-python/jinja[${PYTHON_USEDEP}]')
-	virtual/pkgconfig"
+	virtual/pkgconfig
+"
 
 PATCHES=(
 	"${FILESDIR}"/${PN}-5.229.1-llvm-libunwind.patch
@@ -60,10 +76,17 @@ python_check_deps() {
 
 src_unpack() {
 	if [[ ${PV} == 9999 ]]; then
-		local EGIT_SUBMODULES=( $(usev opengl 3rdparty/glad) )
+		local EGIT_SUBMODULES=(
+			3rdparty/fast_float
+			$(usev opengl 3rdparty/glad)
+		)
 		git-r3_src_unpack
 	else
 		default
+
+		rmdir "${S}"/3rdparty/fast_float || die
+		mv fast_float-${FASTFLOAT_PV} "${S}"/3rdparty/fast_float || die
+
 		if use opengl; then
 			rmdir "${S}"/3rdparty/glad || die
 			mv glad-${GLAD_PV} "${S}"/3rdparty/glad || die
@@ -77,6 +100,9 @@ src_prepare() {
 	# typically auto-skipped, but may assume usable opengl/vulkan then hang
 	sed -i "/tests += 'opengl_surfaceless.c'/d" src/opengl/meson.build || die
 	sed -i "/tests += 'vulkan.c'/d" src/vulkan/meson.build || die
+
+	# mypatch: use shared SPIRV
+	sed -i "s/cxx.find_library('SPIRV', required: required, static: static)/cxx.find_library('SPIRV', required: required)/" src/glsl/meson.build || die
 }
 
 multilib_src_configure() {
@@ -93,6 +119,7 @@ multilib_src_configure() {
 		$(meson_feature vulkan)
 		$(meson_feature vulkan vk-proc-addr)
 		-Dvulkan-registry="${ESYSROOT}"/usr/share/vulkan/registry/vk.xml
+		$(meson_feature xxhash)
 	)
 
 	meson_src_configure

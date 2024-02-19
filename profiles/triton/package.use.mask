@@ -1,0 +1,2 @@
+#sys-libs/compiler-rt-sanitizers -asan -ubsan -tsan
+

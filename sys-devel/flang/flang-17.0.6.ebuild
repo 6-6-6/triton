@@ -16,14 +16,15 @@ HOMEPAGE="https://llvm.org/"
 
 LICENSE="Apache-2.0-with-LLVM-exceptions UoI-NCSA MIT"
 SLOT="${LLVM_MAJOR}/${LLVM_SOABI}"
-#KEYWORDS="~arm64-macos"
-KEYWORDS=""
+KEYWORDS="~arm64-macos"
+#KEYWORDS=""
 IUSE="debug doc ieee-long-double +pie +static-analyzer test xml"
 REQUIRED_USE="${PYTHON_REQUIRED_USE}"
 RESTRICT="!test? ( test )"
 
 DEPEND="
 	~sys-devel/llvm-${PV}:${LLVM_MAJOR}=[debug=,${MULTILIB_USEDEP}]
+	~sys-devel/mlir-${PV}:${LLVM_MAJOR}=[debug=,${MULTILIB_USEDEP}]
 	static-analyzer? ( dev-lang/perl:* )
 	xml? ( dev-libs/libxml2:2=[${MULTILIB_USEDEP}] )
 "
@@ -35,7 +36,7 @@ RDEPEND="
 "
 BDEPEND="
 	${PYTHON_DEPS}
-	>=dev-util/cmake-3.16
+	>=dev-build/cmake-3.16
 	doc? ( $(python_gen_cond_dep '
 		dev-python/recommonmark[${PYTHON_USEDEP}]
 		dev-python/sphinx[${PYTHON_USEDEP}]
@@ -177,6 +178,9 @@ get_distribution_components() {
 		flang-new
 		tco
 	)
+	local out=(
+		flang-new
+	)
 
 	printf "%s${sep}" "${out[@]}"
 }
@@ -200,9 +204,16 @@ multilib_src_configure() {
 		-DLLVM_TARGETS_TO_BUILD="${LLVM_TARGETS// /;}"
 
 		# these are not propagated reliably, so redefine them
-		-DLLVM_ENABLE_EH=ON
+		## TODO: fuck flang
+		-DLLVM_ENABLE_EH=OFF
 		-DLLVM_ENABLE_RTTI=ON
 
+	)
+	# assign mlir-tblgen
+	local tools_bin=${BROOT}/usr/lib/llvm/${LLVM_MAJOR}/bin
+	mycmakeargs+=(
+		-DLLVM_TOOLS_BINARY_DIR="${tools_bin}"
+		-DMLIR_TABLEGEN="${tools_bin}"/mlir-tblgen
 	)
 
 
@@ -258,6 +269,7 @@ multilib_src_test() {
 
 src_install() {
 	#DESTDIR=${D} cmake_build install-distribution
+	ewarn probably you need to manually redirect flang/ to ???
 	cmake_src_install
 }
 

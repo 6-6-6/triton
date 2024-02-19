@@ -1,0 +1,12 @@
+diff -Nur a/vendored-meson/meson-python/mesonpy/__init__.py b/vendored-meson/meson-python/mesonpy/__init__.py
+--- a/vendored-meson/meson-python/mesonpy/__init__.py	2024-02-10 01:08:04.985083000 +0100
++++ b/vendored-meson/meson-python/mesonpy/__init__.py	2024-02-10 01:08:37.083111117 +0100
+@@ -133,7 +133,7 @@
+ 
+ _SUFFIXES = importlib.machinery.all_suffixes()
+ _EXTENSION_SUFFIXES = importlib.machinery.EXTENSION_SUFFIXES
+-_EXTENSION_SUFFIX_REGEX = re.compile(r'^\.(?:(?P<abi>[^.]+)\.)?(?:so|pyd|dll)$')
++_EXTENSION_SUFFIX_REGEX = re.compile(r'^\.(?:(?P<abi>[^.]+)\.)?(?:so|pyd|dll|bundle)$')
+ assert all(re.match(_EXTENSION_SUFFIX_REGEX, x) for x in _EXTENSION_SUFFIXES)
+ 
+ 

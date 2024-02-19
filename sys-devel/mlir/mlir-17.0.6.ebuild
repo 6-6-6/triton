@@ -12,8 +12,8 @@ HOMEPAGE="https://mlir.llvm.org"
 
 LICENSE="Apache-2.0-with-LLVM-exceptions || ( UoI-NCSA MIT )"
 SLOT="${LLVM_MAJOR}/${LLVM_SOABI}"
-KEYWORDS="arm64-macos"
-IUSE="+clang +static-libs test"
+KEYWORDS="~arm64-macos"
+IUSE="+clang +static-libs test debug"
 REQUIRED_USE="test? ( clang )"
 RESTRICT="!test? ( test )"
 
@@ -21,6 +21,10 @@ DEPEND="
 	${RDEPEND}
 	sys-devel/llvm:${LLVM_MAJOR}
 "
+## TODO
+# MLIR jitrunner
+#	[debug]
+## fucking stupid, need llvm with debug to enable `llvm::orc::JITTargetMachineBuilderPrinter`
 BDEPEND="
 	clang? (
 		sys-devel/clang:${LLVM_MAJOR}
@@ -97,51 +101,17 @@ get_distribution_components() {
 	local sep=${1-;}
 
 	local out=(
-		mlir-tblgen
-		mlir-headers
-		mlir-libraries
-		distribution
-		MLIRAMDGPUDialect
-		MLIRAMDGPUToROCDL
-		MLIRAMXDialect
 		MLIRAMXToLLVMIRTranslation
-		MLIRAMXTransforms
-		MLIRAffineAnalysis
-		MLIRAffineDialect
-		MLIRAffineToStandard
-		MLIRAffineTransformOps
-		MLIRAffineTransforms
-		MLIRAffineUtils
-		MLIRAnalysis
-		MLIRArithAttrToLLVMConversion
-		MLIRArithDialect
-		MLIRArithToLLVM
-		MLIRArithToSPIRV
-		MLIRArithTransforms
-		MLIRArithUtils
 		MLIRArmNeon2dToIntr
-		MLIRArmNeonDialect
 		MLIRArmNeonToLLVMIRTranslation
-		MLIRArmSVEDialect
 		MLIRArmSVEToLLVMIRTranslation
-		MLIRArmSVETransforms
-		MLIRAsmParser
-		MLIRAsyncDialect
-		MLIRAsyncToLLVM
-		MLIRAsyncTransforms
-		MLIRBufferizationDialect
 		MLIRBufferizationToMemRef
-		MLIRBufferizationTransformOps
-		MLIRBufferizationTransforms
-		MLIRBytecodeReader
 		MLIRBytecodeWriter
 		MLIRCAPIAsync
 		MLIRCAPIControlFlow
 		MLIRCAPIConversion
 		MLIRCAPIDebug
-		MLIRCAPIExecutionEngine
 		MLIRCAPIFunc
-		MLIRCAPIGPU
 		MLIRCAPIIR
 		MLIRCAPIInterfaces
 		MLIRCAPILLVM
@@ -154,204 +124,219 @@ get_distribution_components() {
 		MLIRCAPIShape
 		MLIRCAPISparseTensor
 		MLIRCAPITensor
-		MLIRCAPITransformDialect
 		MLIRCAPITransforms
-		MLIRCallInterfaces
-		MLIRCastInterfaces
-		MLIRComplexDialect
-		MLIRComplexToLLVM
-		MLIRComplexToLibm
-		MLIRComplexToStandard
-		MLIRControlFlowDialect
-		MLIRControlFlowInterfaces
-		MLIRControlFlowToLLVM
-		MLIRControlFlowToSPIRV
-		MLIRCopyOpInterface
-		MLIRDLTIDialect
-		MLIRDataLayoutInterfaces
 		MLIRDerivedAttributeOpInterface
-		MLIRDestinationStyleOpInterface
-		MLIRDialect
-		MLIRDialectUtils
-		MLIREmitCDialect
-		MLIRExecutionEngine
-		MLIRExecutionEngineUtils
 		MLIRFromLLVMIRTranslationRegistration
-		MLIRFuncDialect
-		MLIRFuncToLLVM
-		MLIRFuncToSPIRV
-		MLIRFuncTransforms
-		MLIRGPUOps
-		MLIRGPUToGPURuntimeTransforms
-		MLIRGPUToNVVMTransforms
-		MLIRGPUToROCDLTransforms
-		MLIRGPUToSPIRV
-		MLIRGPUToVulkanTransforms
-		MLIRGPUTransformOps
-		MLIRGPUTransforms
-		MLIRIR
-		MLIRIndexDialect
 		MLIRIndexToLLVM
-		MLIRInferIntRangeCommon
-		MLIRInferIntRangeInterface
-		MLIRInferTypeOpInterface
-		MLIRJitRunner
-		MLIRLLVMCommonConversion
-		MLIRLLVMDialect
 		MLIRLLVMIRToLLVMTranslation
-		MLIRLLVMIRTransforms
-		MLIRLLVMToLLVMIRTranslation
-		MLIRLinalgAnalysis
-		MLIRLinalgDialect
 		MLIRLinalgToLLVM
 		MLIRLinalgToStandard
-		MLIRLinalgTransformOps
-		MLIRLinalgTransforms
-		MLIRLinalgUtils
-		MLIRLoopLikeInterface
 		MLIRLspServerLib
 		MLIRLspServerSupportLib
-		MLIRMLProgramDialect
-		MLIRMaskableOpInterface
-		MLIRMaskingOpInterface
-		MLIRMathDialect
 		MLIRMathToFuncs
-		MLIRMathToLLVM
-		MLIRMathToLibm
-		MLIRMathToSPIRV
-		MLIRMathTransforms
-		MLIRMemRefDialect
-		MLIRMemRefToLLVM
-		MLIRMemRefToSPIRV
-		MLIRMemRefTransformOps
-		MLIRMemRefTransforms
-		MLIRMemRefUtils
 		MLIRMlirOptMain
-		MLIRNVGPUDialect
-		MLIRNVGPUToNVVM
-		MLIRNVGPUTransforms
-		MLIRNVGPUUtils
-		MLIRNVVMDialect
-		MLIRNVVMToLLVMIRTranslation
-		MLIROpenACCDialect
-		MLIROpenACCToLLVM
 		MLIROpenACCToLLVMIRTranslation
 		MLIROpenACCToSCF
-		MLIROpenMPDialect
 		MLIROpenMPToLLVM
-		MLIROpenMPToLLVMIRTranslation
 		MLIROptLib
-		MLIRPDLDialect
-		MLIRPDLInterpDialect
 		MLIRPDLLAST
 		MLIRPDLLCodeGen
 		MLIRPDLLODS
-		MLIRPDLToPDLInterp
-		MLIRParallelCombiningOpInterface
-		MLIRParser
-		MLIRPass
-		MLIRPresburger
-		MLIRQuantDialect
-		MLIRQuantUtils
-		MLIRROCDLDialect
 		MLIRROCDLToLLVMIRTranslation
-		MLIRReconcileUnrealizedCasts
 		MLIRReduce
 		MLIRReduceLib
-		MLIRRewrite
-		MLIRRuntimeVerifiableOpInterface
-		MLIRSCFDialect
-		MLIRSCFToControlFlow
-		MLIRSCFToGPU
 		MLIRSCFToOpenMP
-		MLIRSCFToSPIRV
-		MLIRSCFTransformOps
-		MLIRSCFTransforms
-		MLIRSCFUtils
-		MLIRSPIRVBinaryUtils
-		MLIRSPIRVConversion
-		MLIRSPIRVDeserialization
-		MLIRSPIRVDialect
-		MLIRSPIRVModuleCombiner
-		MLIRSPIRVSerialization
-		MLIRSPIRVToLLVM
-		MLIRSPIRVTransforms
-		MLIRSPIRVTranslateRegistration
-		MLIRSPIRVUtils
-		MLIRShapeDialect
-		MLIRShapeOpsTransforms
 		MLIRShapeToStandard
-		MLIRShapedOpInterfaces
-		MLIRSideEffectInterfaces
-		MLIRSparseTensorDialect
 		MLIRSparseTensorEnums
-		MLIRSparseTensorPipelines
 		MLIRSparseTensorRuntime
-		MLIRSparseTensorTransforms
-		MLIRSparseTensorUtils
-		MLIRSupport
-		MLIRSupportIndentedOstream
 		MLIRTableGen
 		MLIRTargetCpp
-		MLIRTargetLLVMIRExport
 		MLIRTargetLLVMIRImport
 		MLIRTblgenLib
-		MLIRTensorDialect
-		MLIRTensorInferTypeOpInterfaceImpl
-		MLIRTensorTilingInterfaceImpl
-		MLIRTensorToLinalg
-		MLIRTensorToSPIRV
-		MLIRTensorTransforms
-		MLIRTensorUtils
-		MLIRTilingInterface
 		MLIRToLLVMIRTranslationRegistration
-		MLIRTosaDialect
 		MLIRTosaToArith
 		MLIRTosaToLinalg
 		MLIRTosaToSCF
 		MLIRTosaToTensor
-		MLIRTosaTransforms
-		MLIRTransformDialect
-		MLIRTransformDialectTransforms
-		MLIRTransformDialectUtils
-		MLIRTransformUtils
-		MLIRTransforms
-		MLIRTranslateLib
-		MLIRVectorDialect
-		MLIRVectorInterfaces
-		MLIRVectorToGPU
-		MLIRVectorToLLVM
-		MLIRVectorToSCF
-		MLIRVectorToSPIRV
-		MLIRVectorTransformOps
-		MLIRVectorTransforms
-		MLIRVectorUtils
-		MLIRViewLikeInterface
-		MLIRX86VectorDialect
-		MLIRX86VectorToLLVMIRTranslation
-		MLIRX86VectorTransforms
+		mlir-libraries
+		mlir-tblgen
+	)
+	local out=(
+		# the very needed things
 		mlir-cmake-exports
-		obj.MLIRCAPIAsync
-		obj.MLIRCAPIControlFlow
-		obj.MLIRCAPIConversion
-		obj.MLIRCAPIDebug
-		obj.MLIRCAPIExecutionEngine
-		obj.MLIRCAPIFunc
-		obj.MLIRCAPIGPU
-		obj.MLIRCAPIIR
-		obj.MLIRCAPIInterfaces
-		obj.MLIRCAPILLVM
-		obj.MLIRCAPILinalg
-		obj.MLIRCAPIMLProgram
-		obj.MLIRCAPIPDL
-		obj.MLIRCAPIQuant
-		obj.MLIRCAPIRegisterEverything
-		obj.MLIRCAPISCF
-		obj.MLIRCAPIShape
-		obj.MLIRCAPISparseTensor
-		obj.MLIRCAPITensor
-		obj.MLIRCAPITransformDialect
-		obj.MLIRCAPITransforms
+		mlir-headers
+		mlir-tblgen
+		# suggested by flang's configure phase
+		MLIRAMDGPUDialect
+MLIRAMDGPUTransforms
+MLIRAMDGPUUtils
+MLIRAMXDialect
+MLIRAMXTransforms
+MLIRAffineAnalysis
+MLIRAffineDialect
+MLIRAffineTransformOps
+MLIRAffineTransforms
+MLIRAffineUtils
+MLIRArithDialect
+MLIRArithTransforms
+MLIRArithUtils
+MLIRArithValueBoundsOpInterfaceImpl
+MLIRArmNeonDialect
+MLIRArmSMEDialect
+MLIRArmSMETransforms
+MLIRArmSMEUtils
+MLIRArmSVEDialect
+MLIRArmSVETransforms
+MLIRAsyncDialect
+MLIRAsyncTransforms
+MLIRBufferizationDialect
+MLIRBufferizationTransformOps
+MLIRBufferizationTransforms
+MLIRComplexDialect
+MLIRControlFlowDialect
+MLIRDLTIDialect
+MLIREmitCDialect
+MLIRFuncAllExtensions
+MLIRFuncDialect
+MLIRFuncInlinerExtension
+MLIRFuncTransforms
+MLIRGPUDialect
+MLIRGPUTransformOps
+MLIRGPUTransforms
+MLIRIR
+MLIRIRDL
+MLIRIndexDialect
+MLIRLLVMDialect
+MLIRLLVMIRTransforms
+MLIRLinalgDialect
+MLIRLinalgTransformOps
+MLIRLinalgTransforms
+MLIRLinalgUtils
+MLIRMLProgramDialect
+MLIRMathDialect
+MLIRMathTransforms
+MLIRMemRefDialect
+MLIRMemRefTransformOps
+MLIRMemRefTransforms
+MLIRMemRefUtils
+MLIRNVGPUDialect
+MLIRNVGPUTransformOps
+MLIRNVGPUTransforms
+MLIRNVGPUUtils
+MLIRNVVMDialect
+MLIROpenACCDialect
+MLIROpenMPDialect
+MLIRPDLDialect
+MLIRPDLInterpDialect
+MLIRQuantDialect
+MLIRQuantUtils
+MLIRROCDLDialect
+MLIRSCFDialect
+MLIRSCFTransformOps
+MLIRSCFTransforms
+MLIRSCFUtils
+MLIRSPIRVConversion
+MLIRSPIRVDialect
+MLIRSPIRVModuleCombiner
+MLIRSPIRVTransforms
+MLIRSPIRVUtils
+MLIRShapeDialect
+MLIRShapeOpsTransforms
+MLIRSparseTensorDialect
+MLIRSparseTensorPipelines
+MLIRSparseTensorTransforms
+MLIRSparseTensorUtils
+MLIRTensorDialect
+MLIRTensorInferTypeOpInterfaceImpl
+MLIRTensorTilingInterfaceImpl
+MLIRTensorTransformOps
+MLIRTensorTransforms
+MLIRTensorUtils
+MLIRTosaDialect
+MLIRTosaTransforms
+MLIRTransformDialect
+MLIRTransformDialectTransforms
+MLIRTransformDialectUtils
+MLIRTransformPDLExtension
+MLIRUBDialect
+MLIRVectorDialect
+MLIRVectorTransformOps
+MLIRVectorTransforms
+MLIRVectorUtils
+MLIRX86VectorDialect
+MLIRX86VectorTransforms
+	# deps of above
+MLIRAffineToStandard
+MLIRAnalysis
+MLIRBuiltinToLLVMIRTranslation
+MLIRCallInterfaces
+MLIRCastInterfaces
+MLIRComplexToLLVM
+MLIRComplexToLibm
+MLIRComplexToStandard
+MLIRControlFlowInterfaces
+MLIRDataLayoutInterfaces
+MLIRDestinationStyleOpInterface
+MLIRDialect
+MLIRDialectUtils
+MLIRExecutionEngineUtils
+MLIRFuncToLLVM
+MLIRGPUToLLVMIRTranslation
+MLIRGPUToNVVMTransforms
+MLIRInferIntRangeCommon
+MLIRInferIntRangeInterface
+MLIRInferTypeOpInterface
+MLIRLLVMCommonConversion
+MLIRLLVMToLLVMIRTranslation
+MLIRLoopLikeInterface
+MLIRMaskableOpInterface
+MLIRMaskingOpInterface
+MLIRMathToLLVM
+MLIRMathToLibm
+MLIRMemRefToLLVM
+MLIRMemorySlotInterfaces
+MLIRParallelCombiningOpInterface
+MLIRParser
+MLIRPass
+MLIRPresburger
+MLIRReconcileUnrealizedCasts
+MLIRRewrite
+MLIRSCFToControlFlow
+MLIRShapedOpInterfaces
+MLIRSideEffectInterfaces
+MLIRSparseTensorEnums
+MLIRSupport
+MLIRTilingInterface
+MLIRTransformUtils
+MLIRTransforms
+MLIRValueBoundsOpInterface
+MLIRVectorInterfaces
+MLIRVectorToLLVM
+MLIRVectorToSCF
+MLIRViewLikeInterface
+# deps above
+MLIRArithAttrToLLVMConversion
+MLIRArithToLLVM
+MLIRAsmParser
+MLIRBytecodeReader
+MLIRControlFlowToLLVM
+MLIRCopyOpInterface
+MLIRGPUToGPURuntimeTransforms
+MLIRPDLToPDLInterp
+MLIRRuntimeVerifiableOpInterface
+MLIRTargetLLVMIRExport
+MLIRVectorToArmSME
+# ditto
+MLIRAsyncToLLVM
+MLIRTranslateLib
+# flang linked libs
+MLIRMathToFuncs
+MLIROpenACCToLLVMIRTranslation
+MLIROpenMPToLLVMIRTranslation
+MLIROpenMPToLLVM
+# seems to be something sound
+mlir-libraries
+distribution
 	)
 
 	printf "%s${sep}" "${out[@]}"
@@ -374,6 +359,8 @@ test_compiler() {
 }
 
 multilib_src_configure() {
+	## fuck jitrunner / executionengine
+	sed -i "s/set(MLIR_ENABLE_EXECUTION_ENGINE 1/set(MLIR_ENABLE_EXECUTION_ENGINE 0/" "${WORKDIR}"/mlir/CMakeLists.txt
 	if use clang; then
 		local -x CC=${CHOST}-clang
 		local -x CXX=${CHOST}-clang++
@@ -402,6 +389,7 @@ multilib_src_configure() {
 		-DCMAKE_INSTALL_PREFIX="${EPREFIX}/usr/lib/llvm/${LLVM_MAJOR}"
 		-DCMAKE_INSTALL_MANDIR="${EPREFIX}/usr/lib/llvm/${LLVM_MAJOR}/share/man"
 		-DLLVM_DISTRIBUTION_COMPONENTS=$(get_distribution_components)
+		-DLLVM_TARGETS_TO_BUILD=""
 
 	)
 
